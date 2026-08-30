@@ -979,19 +979,8 @@ export function Home() {
                   </div>
                   <div className="flex items-center gap-2">
                     <ModelSelector disabled={!hasConfiguredProvider} />
-{/* Toolbox Button */}
-                <PromptInputAction tooltip="Open Toolbox (search Creator Store)">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 rounded-lg text-primary hover:text-primary hover:bg-primary/10"
-                    onClick={() => setToolboxOpen(true)}
-                  >
-                    <Box className="h-4 w-4" />
-                  </Button>
-                </PromptInputAction>
 
-                {/* Improve Prompt Button */}
+                    {/* Improve Prompt Button */}
                     <PromptInputAction tooltip="Improve prompt for Stud">
                       <Button
                         variant="ghost"
@@ -1445,6 +1434,17 @@ export function Home() {
               </div>
               <div className="flex items-center gap-2">
                 <ModelSelector />
+                {/* Toolbox Button */}
+                <PromptInputAction tooltip="Open Toolbox (search Creator Store)">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-lg text-primary hover:text-primary hover:bg-primary/10"
+                    onClick={() => setToolboxOpen(true)}
+                  >
+                    <Box className="h-4 w-4" />
+                  </Button>
+                </PromptInputAction>
                 {/* Improve Prompt Button */}
                 <PromptInputAction tooltip="Improve prompt for Stud (AI enhances your message)">
                   <Button
