@@ -83,6 +83,11 @@
   border-color: var(--color-border);
 }
 
+::selection {
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+}
+
 body {
   background-color: var(--color-background);
   color: var(--color-foreground);

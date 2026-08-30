@@ -18,6 +18,10 @@ const BRIDGE_URL =
 const RELAY_BASE =
   (import.meta.env.VITE_STUD_RELAY_URL as string | undefined) ??
   (typeof window !== "undefined" ? window.location.origin : "");
+// The relay plugin polls every ~200ms and Studio executes instantly, so a
+// per-request timeout of 20s is more than enough while still surfacing a
+// "no plugin connected" failure promptly instead of blocking for a minute.
+const WEB_TIMEOUT_MS = 20_000;
 const TIMEOUT_MS = 60_000;
 const RESULT_POLL_MS = 100;
 
@@ -87,8 +91,12 @@ async function studioRequestViaRelay<T>(
     return { success: false, error: `Failed to push: ${e}` };
   }
 
+  // Fewer than expected result polls means no plugin is listening; surface the
+  // "not connected" case earlier by tracking whether we've seen any 200 yet.
+  let sawResult = false;
+
   // Poll for result
-  const deadline = Date.now() + TIMEOUT_MS;
+  const deadline = Date.now() + WEB_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, RESULT_POLL_MS));
     try {
@@ -97,6 +105,7 @@ async function studioRequestViaRelay<T>(
         { method: "GET" },
       );
       if (res.status === 200) {
+        sawResult = true;
         const text = await res.text();
         let json: any;
         try {
@@ -113,6 +122,12 @@ async function studioRequestViaRelay<T>(
     }
   }
 
+  if (!sawResult) {
+    return {
+      success: false,
+      error: "Studio isn't responding. Check that the stud-bridge plugin is installed and connected to this site.",
+    };
+  }
   return { success: false, error: "Studio request timed out" };
 }
 

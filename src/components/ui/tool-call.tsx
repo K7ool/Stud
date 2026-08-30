@@ -48,20 +48,20 @@ export function ToolCall({
     waiting: {
       icon: <HelpCircle className="w-4 h-4" />,
       label: "Waiting for response...",
-      color: "text-amber-600",
-      bgColor: "bg-amber-50",
+      color: "text-amber-600 dark:text-amber-400",
+      bgColor: "bg-amber-500/10 border-amber-500/20",
     },
     complete: {
       icon: <Check className="w-4 h-4" />,
       label: "Complete",
-      color: "text-green-600",
-      bgColor: "bg-green-50",
+      color: "text-emerald-600 dark:text-emerald-400",
+      bgColor: "bg-emerald-500/10 border-emerald-500/20",
     },
     error: {
       icon: <X className="w-4 h-4" />,
       label: "Error",
-      color: "text-red-600",
-      bgColor: "bg-red-50",
+      color: "text-red-600 dark:text-red-400",
+      bgColor: "bg-red-500/10 border-red-500/20",
     },
   };
 
@@ -146,10 +146,10 @@ export function ToolCall({
           {/* Error */}
           {status === "error" && error && (
             <div className="space-y-1.5">
-              <p className="text-xs font-medium text-red-600 uppercase tracking-wide">
+              <p className="text-xs font-medium text-red-600 dark:text-red-400 uppercase tracking-wide">
                 Error
               </p>
-              <pre className="text-xs bg-red-50 text-red-700 rounded-lg p-3 overflow-x-auto border border-red-200">
+              <pre className="text-xs bg-red-500/10 text-red-600 dark:text-red-400 rounded-lg p-3 overflow-x-auto border border-red-500/20">
                 {error}
               </pre>
             </div>

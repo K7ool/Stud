@@ -34,7 +34,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
       return (
         <span
           className={cn(
-            "bg-primary-foreground rounded-sm px-1 font-mono text-sm",
+            "bg-primary/10 text-foreground rounded-sm px-1 font-mono text-sm border border-border/60",
             className
           )}
           {...props}

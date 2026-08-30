@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils"
 import React, { useEffect, useRef, useState } from "react"
+import { useSettingsStore } from "@/stores/settings"
 
 // Lazy-load shiki so its core (and the per-language/per-theme chunks it pulls
 // in on demand) stay out of the initial critical bundle. `codeToHtml` is async
@@ -47,10 +48,15 @@ export type CodeBlockCodeProps = {
 function CodeBlockCode({
   code,
   language = "tsx",
-  theme = "github-light",
+  theme,
   className,
   ...props
 }: CodeBlockCodeProps) {
+  // Resolve the shiki theme from the app's live theme so code highlights follow
+  // the current light/dark mode (instead of always rendering light-on-dark jank).
+  const settingsTheme = useSettingsStore((s) => s.appSettings.theme)
+  const resolvedTheme = useSettingsStore((s) => s.getResolvedTheme())
+  const resolved = theme ?? (resolvedTheme === "dark" ? "github-dark" : "github-light")
   const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null)
   const codeRef = useRef(code)
 
@@ -65,7 +71,7 @@ function CodeBlockCode({
       }
       try {
         const shiki = await getShiki()
-        const html = await shiki.codeToHtml(current, { lang: language, theme })
+        const html = await shiki.codeToHtml(current, { lang: language, theme: resolved })
         // Only commit the result if the code hasn't changed since.
         if (codeRef.current === current) setHighlightedHtml(html)
       } catch {
@@ -75,7 +81,7 @@ function CodeBlockCode({
     }, 250)
 
     return () => clearTimeout(timer)
-  }, [code, language, theme])
+  }, [code, language, resolved])
 
   const classNames = cn(
     "w-full overflow-x-auto text-[13px] [&>pre]:px-4 [&>pre]:py-4",

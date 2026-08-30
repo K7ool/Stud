@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, type ReactNode } from "react";
+import { useEffect, useState, useMemo, useRef, useCallback, type ReactNode } from "react";
 import {
   useGameMapStore,
   GameFeature,
@@ -36,6 +36,12 @@ import {
   Zap,
   User,
   X,
+  Search,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  SlidersHorizontal,
 } from "lucide-react";
 import {
   GameGraphCanvas,
@@ -79,6 +85,20 @@ export function GameMap({ open, onOpenChange, onSelectSuggestion }: GameMapProps
   const [viewMode, setViewMode] = useState<"graph" | "mechanics" | "tree">("graph");
   const [statusFilter, setStatusFilter] = useState<MechanicStatus | "all" | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<MechanicCategory | "all" | null>(null);
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [detailsCollapsed, setDetailsCollapsed] = useState(false);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Debounce search input so we don't recompute/layout the graph per keystroke.
+  useEffect(() => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => setSearchQuery(searchInput), 200);
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+    };
+  }, [searchInput]);
 
   useEffect(() => {
     if (!open || viewMode !== "mechanics") return;
@@ -177,115 +197,224 @@ export function GameMap({ open, onOpenChange, onSelectSuggestion }: GameMapProps
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-5xl h-[85vh] overflow-hidden flex flex-col p-6">
-        <DialogHeader className="border-b pb-3 flex flex-row items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center text-primary border border-primary/20">
+      <DialogContent className="flex flex-col w-[94vw] h-[90vh] max-w-[1400px] overflow-hidden p-0 gap-0">
+        <DialogHeader className="border-b px-4 py-3 flex flex-row items-center justify-between gap-4">
+          {/* Left: title + subtitle */}
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary border border-primary/20 shrink-0">
               <Map className="w-5 h-5" />
             </div>
-            <div>
-              <DialogTitle className="text-lg flex items-center gap-2">
-                Connected Game Map
-                <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 font-medium border border-emerald-500/20">
-                  Lemonade Flow
-                </span>
+            <div className="min-w-0">
+              <DialogTitle className="text-base font-semibold leading-tight">
+                Game Map
               </DialogTitle>
-              <p className="text-xs text-muted-foreground">
-                Visual feature dependencies and 1-click AI generation pipeline
+              <p className="text-[11px] text-muted-foreground truncate">
+                Visualize your game's systems and dependencies
               </p>
             </div>
           </div>
 
-          {/* View Mode Toggle */}
-          <div className="flex items-center gap-1 bg-muted p-1 rounded-lg">
+          {/* Center: compact connection status */}
+          <div className="hidden md:flex items-center gap-2 shrink-0">
+            <span className="inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-full border bg-muted/40">
+              <span
+                className={cn(
+                  "w-2 h-2 rounded-full",
+                  studioConnected ? "bg-emerald-500" : "bg-muted-foreground"
+                )}
+              />
+              <span className={studioConnected ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}>
+                {studioConnected ? "Connected" : "Disconnected"}
+              </span>
+            </span>
+            {projectName && (
+              <span className="text-[11px] text-muted-foreground truncate max-w-[180px] font-mono">
+                {projectName}
+              </span>
+            )}
+          </div>
+
+          {/* Right: view mode tabs + close */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* View Mode Toggle — subtle segmented tabs */}
+            <div className="flex items-center gap-0.5 bg-muted/60 p-0.5 rounded-lg">
+              <button
+                onClick={() => setViewMode("graph")}
+                className={cn(
+                  "px-2.5 h-7 rounded-md text-xs font-medium transition-all flex items-center gap-1.5",
+                  viewMode === "graph"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <GitFork className="w-3.5 h-3.5" />
+                <span className="hidden lg:inline">Connected Map</span>
+              </button>
+              <button
+                onClick={() => setViewMode("mechanics")}
+                title="Real project mechanics graph (requires Studio)"
+                className={cn(
+                  "px-2.5 h-7 rounded-md text-xs font-medium transition-all flex items-center gap-1.5",
+                  viewMode === "mechanics"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Network className="w-3.5 h-3.5" />
+                <span className="hidden lg:inline">Mechanics</span>
+                {nodes.length > 0 && (
+                  <span className="text-[9px] px-1 py-0.5 rounded-full bg-primary/15 text-primary font-mono">
+                    {nodes.length}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={() => setViewMode("tree")}
+                className={cn(
+                  "px-2.5 h-7 rounded-md text-xs font-medium transition-all flex items-center gap-1.5",
+                  viewMode === "tree"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span className="hidden lg:inline">Hierarchy</span>
+              </button>
+            </div>
+
+            <div className="w-px h-5 bg-border mx-1" />
             <Button
-              size="sm"
-              variant={viewMode === "graph" ? "secondary" : "ghost"}
-              className="h-7 text-xs px-2.5 gap-1.5"
-              onClick={() => setViewMode("graph")}
+              size="icon-sm"
+              variant="ghost"
+              onClick={() => onOpenChange(false)}
+              title="Close game map"
+              aria-label="Close game map"
             >
-              <GitFork className="w-3.5 h-3.5" />
-              Connected Map
-            </Button>
-            <Button
-              size="sm"
-              variant={viewMode === "mechanics" ? "secondary" : "ghost"}
-              className="h-7 text-xs px-2.5 gap-1.5"
-              onClick={() => setViewMode("mechanics")}
-              title="Real project mechanics graph (requires Studio)"
-            >
-              <Network className="w-3.5 h-3.5" />
-              Mechanics
-              {nodes.length > 0 && (
-                <span className="text-[9px] px-1 py-0.5 rounded-full bg-primary/15 text-primary font-mono">
-                  {nodes.length}
-                </span>
-              )}
-            </Button>
-            <Button
-              size="sm"
-              variant={viewMode === "tree" ? "secondary" : "ghost"}
-              className="h-7 text-xs px-2.5 gap-1.5"
-              onClick={() => setViewMode("tree")}
-            >
-              <Layers className="w-3.5 h-3.5" />
-              Hierarchy
+              <X className="w-4 h-4" />
             </Button>
           </div>
         </DialogHeader>
 
-        <div className="flex flex-1 gap-5 min-h-0 pt-3">
+        <div className="flex flex-1 min-h-0">
           {/* Mechanics Canvas View (rich graph from real scan data) */}
           {viewMode === "mechanics" ? (
-            <div className="flex flex-1 gap-5 min-h-0">
-              {/* Graph canvas */}
-              <div className="flex-1 flex flex-col gap-3 min-h-0">
-                {/* Analysis progress strip */}
+            <div className="flex flex-1 min-h-0">
+              {/* LEFT: Filter control panel (collapsible) */}
+              <div
+                className={cn(
+                  "shrink-0 border-r bg-muted/20 h-full transition-all duration-200 overflow-hidden",
+                  sidebarCollapsed ? "w-0 border-r-0" : "w-[240px]"
+                )}
+              >
+                <div className="flex flex-col h-full min-h-0" style={{ width: 240 }}>
+                  <div className="flex items-center justify-between px-3 pt-2.5 pb-1">
+                    <label className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                      <SlidersHorizontal className="w-3 h-3" />
+                      Filters
+                    </label>
+                    <button
+                      onClick={() => setSidebarCollapsed(true)}
+                      className="text-muted-foreground hover:text-foreground p-1 rounded-md"
+                      title="Collapse filters"
+                      aria-label="Collapse filters"
+                    >
+                      <PanelLeftClose className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Search */}
+                  <div className="px-3 pb-2.5">
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                      <input
+                        value={searchInput}
+                        onChange={(e) => setSearchInput(e.target.value)}
+                        placeholder="Search mechanics..."
+                        className="w-full h-8 pl-8 pr-7 text-xs rounded-lg border bg-background outline-none focus:border-ring focus:ring-1 focus:ring-ring/30"
+                      />
+                      {searchInput && (
+                        <button
+                          onClick={() => setSearchInput("")}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                          title="Clear search"
+                          aria-label="Clear search"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Status filter */}
+                  {nodes.length > 0 && (
+                    <div className="flex flex-col gap-1 px-3 pb-3 overflow-y-auto">
+                      <span className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Status</span>
+                      <div className="flex flex-col gap-1">
+                        <FilterRowChip
+                          active={statusFilter === null}
+                          label="All Statuses"
+                          count={nodes.length}
+                          dotColor="#A3A3A3"
+                          onClick={() => setStatusFilter(null)}
+                        />
+                        {(Object.keys(MECHANIC_STATUS_META) as MechanicStatus[])
+                          .filter((k) => mechanicCounts.byStatus[k] > 0)
+                          .map((k) => (
+                            <FilterRowChip
+                              key={k}
+                              active={statusFilter === k}
+                              label={MECHANIC_STATUS_META[k].label}
+                              count={mechanicCounts.byStatus[k]}
+                              dotColor={MECHANIC_STATUS_META[k].color}
+                              onClick={() => setStatusFilter(statusFilter === k ? null : k)}
+                            />
+                          ))}
+                      </div>
+
+                      <span className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5 mt-3">Category</span>
+                      <div className="flex flex-col gap-1">
+                        {(Object.keys(CATEGORY_META) as MechanicCategory[])
+                          .filter((k) => mechanicCounts.byCategory[k] > 0)
+                          .map((k) => {
+                            const Icon = CATEGORY_META[k].icon;
+                            return (
+                              <FilterRowChip
+                                key={k}
+                                active={categoryFilter === k}
+                                label={CATEGORY_META[k].label}
+                                count={mechanicCounts.byCategory[k]}
+                                dotColor="#A3A3A3"
+                                icon={<Icon className="w-3 h-3" />}
+                                onClick={() => setCategoryFilter(categoryFilter === k ? null : k)}
+                              />
+                            );
+                          })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Sidebar collapse trigger (when collapsed) */}
+              {sidebarCollapsed && (
+                <button
+                  onClick={() => setSidebarCollapsed(false)}
+                  className="shrink-0 w-7 self-stretch flex items-center justify-center border-r text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+                  title="Show filters"
+                  aria-label="Show filters"
+                >
+                  <PanelLeftOpen className="w-3.5 h-3.5" />
+                </button>
+              )}
+
+              {/* CENTER: Graph (dominant) */}
+              <div className="flex-1 flex flex-col gap-2 min-w-0 p-3">
                 {analysisRunning && (
                   <div className="flex items-center gap-2 text-xs text-muted-foreground px-1">
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
                     <span className="capitalize">{analysisStage ?? "analyzing"}…</span>
                   </div>
                 )}
-
-                {/* Filters */}
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground mr-1">
-                    Status
-                  </span>
-                  <FilterChip
-                    active={statusFilter === "all" || statusFilter === null}
-                    label="All"
-                    onClick={() => setStatusFilter(null)}
-                  />
-                  {(Object.keys(MECHANIC_STATUS_META) as MechanicStatus[])
-                    .filter((k) => mechanicCounts.byStatus[k] > 0)
-                    .map((k) => (
-                      <FilterChip
-                        key={k}
-                        active={statusFilter === k}
-                        label={MECHANIC_STATUS_META[k].label}
-                        count={mechanicCounts.byStatus[k]}
-                        dotColor={MECHANIC_STATUS_META[k].color}
-                        onClick={() => setStatusFilter(statusFilter === k ? null : k)}
-                      />
-                    ))}
-                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground mx-1">
-                    Category
-                  </span>
-                  {(Object.keys(CATEGORY_META) as MechanicCategory[])
-                    .filter((k) => mechanicCounts.byCategory[k] > 0)
-                    .map((k) => (
-                      <FilterChip
-                        key={k}
-                        active={categoryFilter === k}
-                        label={CATEGORY_META[k].label}
-                        count={mechanicCounts.byCategory[k]}
-                        dotColor="#A3A3A3"
-                        onClick={() => setCategoryFilter(categoryFilter === k ? null : k)}
-                      />
-                    ))}
-                </div>
 
                 <GameGraphCanvas
                   nodes={nodes}
@@ -297,39 +426,62 @@ export function GameMap({ open, onOpenChange, onSelectSuggestion }: GameMapProps
                   connected={studioConnected}
                   statusFilter={statusFilter}
                   categoryFilter={categoryFilter}
+                  searchQuery={searchQuery}
                 />
               </div>
 
-              {/* Details / Evidence panel */}
-              <div className="w-[320px] shrink-0 border rounded-xl bg-card overflow-y-auto">
-                {selectedMechanic ? (
-                  <MechanicDetailPanel
-                    node={selectedMechanic}
-                    onStatusChange={(s, p) => setNodeStatus(selectedMechanic.id, s, p)}
-                    onClose={() => setSelectedMechanicId(null)}
-                    onSelectNode={setSelectedMechanicId}
-                  />
-                ) : (
-                  <div className="flex flex-col items-center justify-center text-center p-6 gap-2 h-full">
-                    <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center text-muted-foreground">
-                      <Network className="w-5 h-5" />
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Select a mechanic to inspect its evidence, dependencies, and real project instances.
-                    </p>
-                    <p className="text-[10px] text-muted-foreground/70">
-                      {nodes.length === 0
-                        ? "Connect Studio then click “Scan & Analyze” to build a real blueprint."
-                        : `${nodes.length} mechanics • ${edges.length} relations`}
-                    </p>
+              {/* RIGHT: Details panel (collapsible) */}
+              {detailsCollapsed ? (
+                <button
+                  onClick={() => setDetailsCollapsed(false)}
+                  className="shrink-0 self-stretch w-7 flex items-center justify-center border-l text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+                  title="Show details"
+                  aria-label="Show details"
+                >
+                  <PanelRightOpen className="w-3.5 h-3.5" />
+                </button>
+              ) : (
+                <div className="shrink-0 w-[320px] border-l bg-card h-full flex min-h-0">
+                  <button
+                    onClick={() => setDetailsCollapsed(true)}
+                    className="shrink-0 w-6 self-stretch flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+                    title="Collapse details"
+                    aria-label="Collapse details"
+                  >
+                    <PanelRightClose className="w-3.5 h-3.5" />
+                  </button>
+                  <div className="flex-1 min-w-0 overflow-y-auto">
+                    {selectedMechanic ? (
+                      <MechanicDetailPanel
+                        node={selectedMechanic}
+                        onStatusChange={(s, p) => setNodeStatus(selectedMechanic.id, s, p)}
+                        onClose={() => setSelectedMechanicId(null)}
+                        onSelectNode={setSelectedMechanicId}
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center justify-center text-center px-3 py-8 gap-1.5 h-full">
+                        <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center text-muted-foreground">
+                          <Network className="w-6 h-6" />
+                        </div>
+                        <p className="text-xs font-medium text-muted-foreground">Select a mechanic</p>
+                        <p className="text-[10px] text-muted-foreground/70 max-w-[200px] leading-relaxed">
+                          Inspect evidence, dependencies, related Roblox instances, and scripts.
+                        </p>
+                        <p className="text-[10px] text-muted-foreground/60">
+                          {nodes.length === 0
+                            ? `Connect Studio then scan to build a real blueprint.`
+                            : `${nodes.length} mechanics • ${edges.length} relations`}
+                        </p>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           ) : (
-          <> 
+          <div className="flex flex-1 gap-4 p-3 min-h-0">
           {/* Main Visual Connected Canvas / Tree */}
-          <div className="w-7/12 border rounded-xl p-4 overflow-y-auto bg-muted/10 relative flex flex-col">
+          <div className="flex-[7] min-w-0 border rounded-xl p-4 overflow-y-auto bg-muted/10 relative flex flex-col">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-primary" />
@@ -442,7 +594,7 @@ export function GameMap({ open, onOpenChange, onSelectSuggestion }: GameMapProps
           </div>
 
           {/* AI Suggestions & Instant Action Panel */}
-          <div className="w-5/12 border rounded-xl p-4 overflow-y-auto bg-card flex flex-col">
+          <div className="flex-[5] min-w-0 border rounded-xl p-4 overflow-y-auto bg-card flex flex-col">
             <div className="flex items-center justify-between mb-3 border-b pb-2.5">
               <div className="flex items-center gap-2">
                 <Lightbulb className="w-4 h-4 text-amber-500" />
@@ -612,7 +764,7 @@ export function GameMap({ open, onOpenChange, onSelectSuggestion }: GameMapProps
               </div>
             )}
           </div>
-          </>
+          </div>
           )}
         </div>
       </DialogContent>
@@ -647,6 +799,40 @@ function FilterChip({ label, active, count, dotColor, onClick }: FilterChipProps
       {label}
       {typeof count === "number" && count > 0 && (
         <span className="text-[9px] font-mono text-muted-foreground/70">{count}</span>
+      )}
+    </button>
+  );
+}
+
+interface FilterRowChipProps {
+  label: string;
+  active: boolean;
+  count?: number;
+  dotColor?: string;
+  icon?: ReactNode;
+  onClick: () => void;
+}
+
+function FilterRowChip({ label, active, count, dotColor, icon, onClick }: FilterRowChipProps) {
+  return (
+    <button
+      onClick={onClick}
+      title={label}
+      className={cn(
+        "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-medium border transition-colors text-left",
+        active
+          ? "bg-primary/10 border-primary/30 text-foreground"
+          : "bg-background border-border/70 text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+      )}
+    >
+      {icon ? (
+        <span className="text-muted-foreground">{icon}</span>
+      ) : dotColor ? (
+        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: dotColor }} />
+      ) : null}
+      <span className="truncate flex-1">{label}</span>
+      {typeof count === "number" && (
+        <span className="text-[10px] font-mono text-muted-foreground">{count}</span>
       )}
     </button>
   );

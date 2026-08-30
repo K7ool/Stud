@@ -31,18 +31,24 @@ const memStore = new Map<string, unknown>();
 
 async function kvCommand<T = unknown>(cmd: unknown[]): Promise<T | null> {
   if (!KV_URL || !KV_TOKEN) return null;
-  const res = await fetch(KV_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${KV_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(cmd),
-  });
-  if (!res.ok) return null;
-  const data = (await res.json()) as { result: unknown };
-  if (data.result === null || data.result === undefined) return null;
-  return data.result as T;
+  try {
+    const res = await fetch(KV_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${KV_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(cmd),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { result: unknown };
+    if (data.result === null || data.result === undefined) return null;
+    return data.result as T;
+  } catch {
+    // Transient network / rate-limit errors must fail closed (return null) so
+    // handlers can treat the miss as "not ready yet" (204) rather than 500ing.
+    return null;
+  }
 }
 
 async function storeGet<T>(key: string): Promise<T | null> {
