@@ -11,74 +11,116 @@ export interface GameFeature {
   completedAt?: string;
 }
 
+export interface FeatureSuggestion {
+  label: string;
+  description: string;
+}
+
+export interface SuggestionState {
+  options: FeatureSuggestion[];
+  loading: boolean;
+  error: string | null;
+  fetchedAt: number | null;
+}
+
 export interface GameMapState {
   features: GameFeature[];
   rootFeature: GameFeature | null;
+  /** Map of featureId -> cached AI suggestions. */
+  suggestions: Record<string, SuggestionState>;
 
   addFeature: (parentId: string | null, feature: Omit<GameFeature, "id" | "children" | "createdAt">) => string;
   updateFeature: (id: string, updates: Partial<GameFeature>) => void;
   deleteFeature: (id: string) => void;
   getFeature: (id: string) => GameFeature | undefined;
   setRootFeature: (feature: Omit<GameFeature, "id" | "children" | "createdAt">) => void;
-  getSuggestions: (featureId: string) => string[];
+  fetchSuggestions: (featureId: string) => Promise<void>;
+  clearSuggestions: (featureId: string) => void;
   clearMap: () => void;
 }
 
-const SUGGESTIONS: Record<string, string[]> = {
-  car: [
-    "Make car faster",
-    "Add nitro boost",
-    "Add car customizer",
-    "Create car dealership",
-    "Add car physics tuning",
-    "Add damage system",
-  ],
-  house: [
-    "Add furniture",
-    "Create rooms",
-    "Add decoration system",
-    "Create house customizer",
-    "Add indoor lighting",
-  ],
-  npc: [
-    "Add dialogue system",
-    "Create NPC schedules",
-    "Add NPC quests",
-    "Make NPCs follow player",
-    "Add NPC shop",
-  ],
-  weapon: [
-    "Add ammo system",
-    "Create weapon upgrades",
-    "Add reload mechanic",
-    "Add weapon skins",
-    "Create weapon crafting",
-  ],
-  game: [
-    "Add save system",
-    "Create main menu",
-    "Add settings menu",
-    "Add player stats",
-    "Create leaderboard",
-  ],
-  default: [
-    "Add more features",
-    "Create UI for this",
-    "Add save/load",
-    "Create documentation",
-    "Add tests",
-    "Optimize performance",
-  ],
-};
+interface FetchSuggestionsInput {
+  featureName: string;
+  featureDescription?: string;
+  parentChain: string[];
+  projectContext?: string;
+  provider: string;
+  model: string;
+  apiKey: string;
+}
 
-function getSuggestionsForFeature(name: string): string[] {
-  const lowerName = name.toLowerCase();
-  for (const [key, suggestions] of Object.entries(SUGGESTIONS)) {
-    if (lowerName.includes(key)) {
-      return suggestions;
+async function callSuggestionsApi(input: FetchSuggestionsInput): Promise<FeatureSuggestion[]> {
+  const res = await fetch("/api/game-map/suggestions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Api-Key": input.apiKey,
+      "X-Provider": input.provider,
+      "X-Model": input.model,
+    },
+    body: JSON.stringify({
+      featureName: input.featureName,
+      featureDescription: input.featureDescription,
+      parentChain: input.parentChain,
+      projectContext: input.projectContext,
+      provider: input.provider,
+      model: input.model,
+    }),
+  });
+
+  if (!res.ok) {
+    let message = `Request failed (${res.status})`;
+    try {
+      const data = (await res.json()) as { error?: string };
+      if (data?.error) message = data.error;
+    } catch {
+      /* ignore */
     }
+    throw new Error(message);
   }
-  return SUGGESTIONS.default;
+
+  const data = (await res.json()) as { options?: FeatureSuggestion[] };
+  if (!data.options || !Array.isArray(data.options) || data.options.length === 0) {
+    throw new Error("No suggestions returned");
+  }
+  return data.options;
+}
+
+function buildParentChain(
+  features: GameFeature[],
+  rootFeature: GameFeature | null,
+  targetId: string
+): string[] {
+  const path: string[] = [];
+
+  const walk = (node: GameFeature, ancestors: string[]): boolean => {
+    const next = [...ancestors, node.name];
+    if (node.id === targetId) {
+      path.push(...next);
+      return true;
+    }
+    for (const child of node.children) {
+      if (walk(child, next)) return true;
+    }
+    return false;
+  };
+
+  if (rootFeature) {
+    if (walk(rootFeature, [])) return path;
+  }
+  for (const f of features) {
+    if (walk(f, [])) return path;
+  }
+  return path;
+}
+
+function getProjectContext(
+  features: GameFeature[],
+  rootFeature: GameFeature | null
+): string {
+  const root = rootFeature ?? features[0];
+  if (!root) return "";
+  return root.description ? `${root.name} — ${root.description}` : root.name;
 }
 
 export const useGameMapStore = create<GameMapState>()(
@@ -86,6 +128,7 @@ export const useGameMapStore = create<GameMapState>()(
     (set, get) => ({
       features: [],
       rootFeature: null,
+      suggestions: {},
 
       addFeature: (parentId, feature) => {
         const id = crypto.randomUUID();
@@ -197,16 +240,136 @@ export const useGameMapStore = create<GameMapState>()(
         set({ rootFeature: newRoot });
       },
 
-      getSuggestions: (featureId) => {
-        const feature = get().getFeature(featureId);
-        if (!feature) return SUGGESTIONS.default;
-        return getSuggestionsForFeature(feature.name);
+      fetchSuggestions: async (featureId) => {
+        const state = get();
+        const feature = state.getFeature(featureId);
+        if (!feature) return;
+
+        // Resolve provider + api key from settings store (dynamic import to avoid circular deps).
+        const { useSettingsStore } = await import("@/stores/settings");
+        const settings = useSettingsStore.getState();
+        const provider = settings.selectedProvider;
+        const model = settings.selectedModel;
+
+        const apiKey =
+          provider === "openai"
+            ? settings.getApiKey("openai")
+            : provider === "anthropic"
+            ? settings.getApiKey("anthropic")
+            : provider === "openrouter"
+            ? settings.getApiKey("openrouter")
+            : undefined;
+
+        if (!apiKey) {
+          set((s) => ({
+            suggestions: {
+              ...s.suggestions,
+              [featureId]: {
+                options: [],
+                loading: false,
+                error:
+                  "No API key for the selected provider. Add one in Settings to get AI suggestions.",
+                fetchedAt: Date.now(),
+              },
+            },
+          }));
+          return;
+        }
+
+        // Skip if cached and recent (<5 min) and not loading
+        const cached = state.suggestions[featureId];
+        if (
+          cached &&
+          !cached.loading &&
+          !cached.error &&
+          cached.options.length > 0 &&
+          cached.fetchedAt &&
+          Date.now() - cached.fetchedAt < 5 * 60 * 1000
+        ) {
+          return;
+        }
+
+        set((s) => ({
+          suggestions: {
+            ...s.suggestions,
+            [featureId]: {
+              options: cached?.options ?? [],
+              loading: true,
+              error: null,
+              fetchedAt: cached?.fetchedAt ?? null,
+            },
+          },
+        }));
+
+        try {
+          const parentChain = buildParentChain(
+            state.features,
+            state.rootFeature,
+            featureId
+          );
+          // Remove the feature itself from the chain — the API only wants ancestors.
+          const ancestors = parentChain.slice(0, -1);
+          const projectContext = getProjectContext(state.features, state.rootFeature);
+
+          const options = await callSuggestionsApi({
+            featureName: feature.name,
+            featureDescription: feature.description,
+            parentChain: ancestors,
+            projectContext,
+            provider,
+            model,
+            apiKey,
+          });
+
+          set((s) => ({
+            suggestions: {
+              ...s.suggestions,
+              [featureId]: {
+                options,
+                loading: false,
+                error: null,
+                fetchedAt: Date.now(),
+              },
+            },
+          }));
+        } catch (err) {
+          set((s) => ({
+            suggestions: {
+              ...s.suggestions,
+              [featureId]: {
+                options: cached?.options ?? [],
+                loading: false,
+                error: (err as Error).message || "Failed to fetch suggestions",
+                fetchedAt: Date.now(),
+              },
+            },
+          }));
+        }
       },
 
-      clearMap: () => set({ features: [], rootFeature: null }),
+      clearSuggestions: (featureId) => {
+        set((s) => {
+          const next = { ...s.suggestions };
+          delete next[featureId];
+          return { suggestions: next };
+        });
+      },
+
+      clearMap: () =>
+        set({ features: [], rootFeature: null, suggestions: {} }),
     }),
     {
       name: "stud-game-map",
+      partialize: (state) => ({
+        features: state.features,
+        rootFeature: state.rootFeature,
+        // Persist cached suggestions (without loading/error) so refresh is instant.
+        suggestions: Object.fromEntries(
+          Object.entries(state.suggestions)
+            .filter(([, v]) => v.options.length > 0 && !v.error)
+            .map(([k, v]) => [k, { ...v, loading: false, error: null }])
+        ),
+      }),
     }
   )
 );

@@ -716,8 +716,8 @@ export function Home() {
     }
   };
 
-  const handleGameMapSuggestion = (suggestion: string) => {
-    setInput(suggestion);
+  const handleGameMapSuggestion = (prompt: string, _childName?: string) => {
+    setInput(prompt);
     handleSubmit();
   };
 
