@@ -55,7 +55,9 @@ Examples:
       return { error: notConnectedError() }
     }
 
-    const result = await cachedStudioRequest<ScriptContent>("/script/get", { path }, 30_000)
+    // Use fresh request instead of cache for script content to ensure we get latest version
+    // Cache invalidation is handled by the non-cached request below
+    const result = await studioRequest<ScriptContent>("/script/get", { path })
     if (!result.success) {
       return { error: result.error }
     }

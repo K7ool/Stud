@@ -4,6 +4,7 @@ import { useChatStore } from "./chat";
 
 export type ConnectionStatus = "disconnected" | "bridge_only" | "connected" | "reconnecting";
 
+// Add missing type definitions at the top
 export interface RobloxState {
   status: ConnectionStatus;
   lastCheck: Date | null;
@@ -12,7 +13,20 @@ export interface RobloxState {
   consecutiveFailures: number;
   reconnectAttempts: number;
   gameInfo: GameInfo | null;
-
+  
+  // Script path caching
+  lastScriptFetch: string | null;
+  
+  // Recent failures tracking for rate limiting
+  recentFailures: Array<{ time: number; error: string }>;
+  
+  // Connection health indicators
+  connectionHealth: {
+    lastStablePeriod: number;
+    failuresSinceLastSuccess: number;
+    consecutiveTimeouts: number;
+  };
+  
   // Actions
   setStatus: (status: ConnectionStatus) => void;
   checkConnection: () => Promise<void>;
@@ -29,12 +43,28 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
   consecutiveFailures: 0,
   reconnectAttempts: 0,
   gameInfo: null,
-
+  // Script path caching
+  lastScriptFetch: null,
+  // Recent failures tracking for rate limiting
+  recentFailures: [],
+  // Connection health indicators
+  connectionHealth: {
+    lastStablePeriod: Date.now(),
+    failuresSinceLastSuccess: 0,
+    consecutiveTimeouts: 0,
+  },
+  
   setStatus: (status) => set({ status }),
   
   checkConnection: async () => {
     const state = get();
     const now = new Date();
+    
+    // Prevent excessive polling during reconnection attempts
+    if (state.status === "reconnecting" && state.consecutiveFailures < 3) {
+      const timeSinceLastCheck = state.lastCheck ? Date.now() - state.lastCheck.getTime() : Infinity;
+      if (timeSinceLastCheck < 500) return;
+    }
     
     try {
       // First check if bridge is running
@@ -111,41 +141,63 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
     // Initial check
     get().checkConnection();
     
-    // Poll more frequently when disconnected - decrease over time
-    // Start with 1 second, gradually increase to 3 seconds if stable
-    const initialInterval = 1000;
-    let currentInterval = initialInterval;
+    // Track last poll time to prevent excessive calls
+    let lastPollTime = Date.now();
+    let pollTimeout: NodeJS.Timeout | null = null;
     
     const poll = () => {
+      const now = Date.now();
       const state = get();
-
+      
       // Skip poll during AI streaming — plugin is busy executing scripts and
       // may not respond to health checks, causing false "disconnected" flickers
       if (useChatStore.getState().isStreaming) {
-        return 2000;
+        pollTimeout = setTimeout(poll, 2000);
+        return;
       }
-
-      // Adjust polling frequency based on connection state
+      
+      // Prevent excessive polling during reconnection attempts
+      if (state.status === "reconnecting" && state.consecutiveFailures < 3) {
+        const timeSinceLastCheck = state.lastCheck ? Date.now() - state.lastCheck.getTime() : Infinity;
+        if (timeSinceLastCheck < 500) {
+          pollTimeout = setTimeout(poll, 500);
+          return;
+        }
+      }
+      
+      // Calculate base interval based on connection state
+      let interval: number;
       if (state.status === "disconnected") {
         // Poll frequently when disconnected to reconnect quickly
-        currentInterval = Math.max(1000, 3000 - state.consecutiveFailures * 100);
+        interval = Math.max(1000, 3000 - state.consecutiveFailures * 100);
       } else if (state.status === "reconnecting" && state.consecutiveFailures < 3) {
         // Poll every 500ms during reconnection
-        currentInterval = 500;
+        interval = 500;
       } else {
         // Normal polling when connected
-        currentInterval = 2000;
+        interval = 2000;
       }
-
+      
+      // Ensure minimum interval between polls
+      const timeSinceLastPoll = now - lastPollTime;
+      const waitTime = Math.max(interval - timeSinceLastPoll, 0);
+      
+      lastPollTime = now + waitTime;
+      
+      // Schedule next poll after waiting
+      pollTimeout = setTimeout(poll, waitTime);
+      
+      // Check connection without blocking the poll timer
       get().checkConnection();
-
-      return currentInterval;
     };
     
-    const interval = setInterval(poll, poll());
+    // Start the polling loop
+    pollTimeout = setTimeout(poll, 100);
     
     // Return cleanup function
-    return () => clearInterval(interval);
+    return () => {
+      if (pollTimeout) clearTimeout(pollTimeout);
+    };
   },
   
   attemptReconnection: async () => {
@@ -190,13 +242,37 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
       });
     }
   },
+  
+  // Track last successful operations to prevent unnecessary reloads
+  lastScriptFetch: null as string | null,
+  
+  // Track recent failures to prevent spam
+  recentFailures: [] as { time: number; error: string }[],
+  
+  // Track connection health indicators
+  connectionHealth: {
+    lastStablePeriod: number;
+    failuresSinceLastSuccess: number;
+    consecutiveTimeouts: number;
+  },
 
   fetchGameInfo: async () => {
     const state = get();
     if (state.status !== "connected" && state.status !== "bridge_only") return;
+    
+    // Don't fetch if we've just fetched recently (within 5 seconds)
+    if (state.gameInfo && state.lastSuccessfulPoll) {
+      const timeSinceLastPoll = Date.now() - state.lastSuccessfulPoll.getTime();
+      if (timeSinceLastPoll < 5000) return;
+    }
+    
     try {
       const info = await getGameInfo();
-      set({ gameInfo: info });
+      if (info) {
+        set({ gameInfo: info, lastSuccessfulPoll: new Date() });
+      } else {
+        set({ gameInfo: null });
+      }
     } catch {
       set({ gameInfo: null });
     }
