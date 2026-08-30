@@ -4,13 +4,13 @@
  * directly. This route forwards the request body and the user's bearer token
  * server-to-server and streams the SSE response back.
  *
- * POST /api/codex
- *   Body: JSON payload identical to the ChatGPT Codex Responses API.
- *   Headers: forwarded Authorization, ChatGPT-Account-Id, Content-Type.
+ * Uses Node.js runtime (not Edge) so we can pipe the upstream response body
+ * directly without buffering.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export const config = {
+  runtime: "nodejs",
   api: {
     bodyParser: false,
     responseLimit: false,

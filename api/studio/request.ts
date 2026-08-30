@@ -6,7 +6,7 @@
  * Queues a request for the plugin to pick up on its next /api/studio/poll,
  * then polls KV for the matching response (written by /api/studio/respond).
  */
-import { kvDel, kvGet, kvSet, type Pair } from "../kv";
+import { kvDel, kvGet, kvSet, type Pair, type StoredResponse } from "../kv";
 
 export const config = { runtime: "edge" };
 
@@ -17,14 +17,14 @@ function cors(res: Response): Response {
   res.headers.set("Access-Control-Allow-Origin", "*");
   res.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.headers.set("Access-Control-Allow-Headers", "Content-Type, X-Pair-Code");
-  return cors;
+  return res;
 }
 
 export default async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") return cors(new Response(null, { status: 204 }));
 
   const code = (req.headers.get("x-pair-code") ?? "").toUpperCase();
-  const pair = await kvGet(code);
+  const pair = await kvGet<Pair>(code);
 
   if (!pair) {
     return cors(new Response(JSON.stringify({ error: "Invalid or expired pairing code" }), {
@@ -66,14 +66,14 @@ export default async function handler(req: Request): Promise<Response> {
 
   // Queue the request
   const updated: Pair = { ...pair, pendingRequest: { id, path, body } };
-  await kvSet(code, updated, 30 * 60);
+  await kvSet<Pair>(code, updated, 30 * 60);
 
   // Poll for response
   const deadline = Date.now() + REQUEST_TIMEOUT_MS;
 
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    const resp = await kvGet<{ status: number; body: string | null }>(`resp:${code}:${id}`);
+    const resp = await kvGet<StoredResponse>(`resp:${code}:${id}`);
     if (resp) {
       // Cleanup
       await kvDel(`resp:${code}:${id}`);
@@ -91,10 +91,10 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   // Timeout — clear pendingRequest so future requests don't get stuck
-  const cleared = await kvGet(code);
+  const cleared = await kvGet<Pair>(code);
   if (cleared && cleared.pendingRequest?.id === id) {
     cleared.pendingRequest = null;
-    await kvSet(code, cleared, 30 * 60);
+    await kvSet<Pair>(code, cleared, 30 * 60);
   }
 
   return cors(new Response(JSON.stringify({ id, error: "Studio request timed out" }), {

@@ -6,7 +6,7 @@
  * HTTP request in /api/studio/request (which polls KV for the response)
  * picks it up.
  */
-import { kvGet, kvSet, kvDel, type Pair } from "../kv";
+import { kvSet } from "../kv";
 
 export const config = { runtime: "edge" };
 
@@ -14,7 +14,7 @@ function cors(res: Response): Response {
   res.headers.set("Access-Control-Allow-Origin", "*");
   res.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.headers.set("Access-Control-Allow-Headers", "Content-Type, X-Pair-Code");
-  return cors;
+  return res;
 }
 
 export default async function handler(req: Request): Promise<Response> {

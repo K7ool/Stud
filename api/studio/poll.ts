@@ -30,7 +30,7 @@ export default async function handler(req: Request): Promise<Response> {
     }));
   }
 
-  let pair = await kvGet(code);
+  let pair = await kvGet<Pair>(code);
   if (!pair) {
     return cors(new Response(JSON.stringify({ error: "Unknown pair" }), {
       status: 404, headers: { "Content-Type": "application/json" },
@@ -46,7 +46,7 @@ export default async function handler(req: Request): Promise<Response> {
 
   const requestToSend = updated.pendingRequest;
   updated.pendingRequest = null;
-  await kvSet(code, updated, 30 * 60);
+  await kvSet<Pair>(code, updated, 30 * 60);
 
   if (requestToSend) {
     return cors(new Response(JSON.stringify({ request: requestToSend }), {

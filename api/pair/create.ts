@@ -2,7 +2,7 @@
  * POST /api/pair/create
  * Creates a fresh 6-character pairing code valid for 5 minutes to claim.
  */
-import { kvSet } from "./kv";
+import { kvSet } from "../kv";
 
 export const config = { runtime: "edge" };
 
