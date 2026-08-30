@@ -37,6 +37,7 @@ import { useRobloxStore, ConnectionStatus } from "@/stores/roblox";
 import { usePluginStore } from "@/stores/plugin";
 import { useAuthStore } from "@/stores/auth";
 import { useGameMapStore } from "@/stores/gameMap";
+import { StudioPairing } from "@/components/StudioPairing";
 import { useChat } from "@/lib/ai/providers";
 import { setAskUserHandler } from "@/lib/roblox/tools";
 import { autoDetectProject, setProjectPath, pickFolder } from "@/lib/file-ops";
@@ -1172,6 +1173,7 @@ export function Home() {
             onClear={clearMessages}
             disabled={messages.length === 0 || isStreaming}
           />
+          <StudioPairing />
           <SettingsPanel
             trigger={
               <Button variant="ghost" size="icon" className="h-8 w-8">

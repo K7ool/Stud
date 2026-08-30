@@ -21,9 +21,17 @@ local TweenService = game:GetService("TweenService")
 
 local PLUGIN_NAME = "stud-bridge"
 local PLUGIN_DISPLAY_NAME = "Stud"
-local POLL_URL = "http://localhost:3001/stud/poll"
-local RESPOND_URL = "http://localhost:3001/stud/respond"
+local LOCAL_POLL_URL = "http://localhost:3001/stud/poll"
+local LOCAL_RESPOND_URL = "http://localhost:3001/stud/respond"
 local MAX_ACTIVITY_LOG = 10
+
+-- Web-pairing config (set via the widget UI).
+-- When RELAY_BASE + pairCode are configured, the plugin polls the Vercel
+-- relay instead of localhost:3001, allowing the website to drive Studio.
+local RELAY_BASE = ""
+local pairCode = ""
+local POLL_URL = LOCAL_POLL_URL
+local RESPOND_URL = LOCAL_RESPOND_URL
 
 -- State
 local isConnected = false
@@ -64,6 +72,9 @@ local statusDot
 local statusText
 local subText
 local connectButton
+local pairCodeBox
+local pairStatus
+local pairButton
 local activityContainer
 local activityList
 local processingIndicator
@@ -338,9 +349,74 @@ local function createWidget()
 		parent = container
 	})
 	connectButton.LayoutOrder = 2
-	
+
 	connectButton.MouseButton1Click:Connect(function()
 		toggleConnection()
+	end)
+
+	-- ========== Web Pairing Card ==========
+	local pairCard = createFrame({
+		bg = Colors.bgSecondary,
+		size = UDim2.new(1, 0, 0, 100),
+		corner = 14,
+		parent = container
+	})
+	pairCard.LayoutOrder = 3
+
+	local pairHeader = createLabel({
+		text = "Pair with Web App",
+		color = Colors.textMuted,
+		textSize = 11,
+		font = Enum.Font.GothamBold,
+		size = UDim2.new(1, 0, 0, 16),
+		position = UDim2.new(0, 0, 0, 0),
+		parent = pairCard
+	})
+
+	local pairInputFrame = createFrame({
+		bg = Colors.bg,
+		size = UDim2.new(1, 0, 0, 32),
+		corner = 8,
+		position = UDim2.new(0, 0, 0, 22),
+		parent = pairCard
+	})
+
+	pairCodeBox = Instance.new("TextBox")
+	pairCodeBox.Size = UDim2.new(1, -12, 1, 0)
+	pairCodeBox.Position = UDim2.new(0, 6, 0, 0)
+	pairCodeBox.BackgroundTransparency = 1
+	pairCodeBox.TextColor3 = Colors.text
+	pairCodeBox.PlaceholderText = "Enter 6-char code from website"
+	pairCodeBox.PlaceholderColor3 = Colors.textMuted
+	pairCodeBox.Text = ""
+	pairCodeBox.TextXAlignment = Enum.TextXAlignment.Left
+	pairCodeBox.TextSize = 13
+	pairCodeBox.Font = Enum.Font.RobotoMono
+	pairCodeBox.ClearTextOnFocus = false
+	pairCodeBox.Parent = pairInputFrame
+
+	pairStatus = createLabel({
+		text = "Not paired",
+		color = Colors.textSecondary,
+		textSize = 11,
+		font = Enum.Font.Gotham,
+		size = UDim2.new(1, 0, 0, 14),
+		position = UDim2.new(0, 0, 1, -14),
+		parent = pairCard
+	})
+
+	pairButton = createButton({
+		text = "Pair",
+		bg = Colors.accent,
+		bgHover = Colors.accentHover,
+		size = UDim2.new(1, 0, 0, 32),
+		corner = 10,
+		position = UDim2.new(0, 0, 1, -36),
+		parent = pairCard
+	})
+
+	pairButton.MouseButton1Click:Connect(function()
+		togglePair()
 	end)
 	
 	-- ========== Activity Log ==========
@@ -1135,10 +1211,76 @@ local function pollServer()
 	updateUI()
 end
 
+-- Toggle web pairing
+function togglePair()
+	if pairCode ~= "" then
+		-- Unpair
+		pairCode = ""
+		RELAY_BASE = ""
+		POLL_URL = LOCAL_POLL_URL
+		RESPOND_URL = LOCAL_RESPOND_URL
+		if pairStatus then pairStatus.Text = "Not paired" end
+		if pairButton then pairButton.Text = "Pair" end
+		addActivity("Unpaired from web", "success")
+		print("[stud-bridge] Unpaired from web")
+		return
+	end
+
+	local input = pairCodeBox and pairCodeBox.Text or ""
+	input = string.gsub(string.upper(input), "%s+", "")
+	if #input ~= 6 then
+		if pairStatus then
+			pairStatus.Text = "Code must be 6 characters"
+			pairStatus.TextColor3 = Colors.error
+		end
+		return
+	end
+
+	-- Use the standard Stud web relay URL. The plugin connects to the same
+	-- Vercel deployment the website is on. Users on a different deployment
+	-- would need to edit RELAY_BASE in the script header.
+	if RELAY_BASE == "" then
+		-- Default to the public Stud deployment. Override RELAY_BASE at
+		-- the top of this script for self-hosted deployments.
+		RELAY_BASE = "https://stud-weld.vercel.app"
+	end
+
+	POLL_URL = RELAY_BASE .. "/api/studio/poll?code=" .. input .. "&project=Roblox%20Studio"
+	RESPOND_URL = RELAY_BASE .. "/api/studio/respond?code=" .. input
+	pairCode = input
+	if pairStatus then
+		pairStatus.Text = "Pairing..."
+		pairStatus.TextColor3 = Colors.warning
+	end
+	if pairButton then pairButton.Text = "Unpair" end
+	addActivity("Pairing with web (" .. input .. ")", "pending")
+	print("[stud-bridge] Pairing with web, code=" .. input)
+
+	-- Auto-start polling if not already running.
+	if not pollingEnabled then
+		pollingEnabled = true
+		isConnecting = true
+		updateUI()
+		task.spawn(pollServer)
+	end
+
+	-- Verify pairing asynchronously.
+	task.spawn(function()
+		task.wait(1)
+		if pairCode == input then
+			if pairStatus then
+				pairStatus.Text = "Paired - " .. (RELAY_BASE or "")
+				pairStatus.TextColor3 = Colors.success
+			end
+			addActivity("Paired with web", "success")
+		end
+	end)
+end
+
 -- Toggle connection
 function toggleConnection()
 	pollingEnabled = not pollingEnabled
-	
+
 	if pollingEnabled then
 		isConnecting = true
 		updateUI()

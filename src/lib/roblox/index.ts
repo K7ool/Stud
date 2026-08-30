@@ -1,4 +1,4 @@
-export { studioRequest, isStudioConnected, isBridgeRunning, notConnectedError } from "./client"
+export { studioRequest, isStudioConnected, isBridgeRunning, notConnectedError, createPair, getPairCode, clearPair, checkPairStatus } from "./client"
 export { robloxTools } from "./tools"
 export {
   robloxGetScript,
