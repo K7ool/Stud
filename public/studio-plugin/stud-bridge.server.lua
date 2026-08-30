@@ -549,7 +549,111 @@ local function isDescendantOf(target, ancestor)
 	return false
 end
 
+local SCRIPT_TYPES = {
+	Script = true,
+	LocalScript = true,
+	ModuleScript = true,
+}
+
+local function findExistingInstance(parent, name, className)
+	local child = parent:FindFirstChild(name)
+	if child then return child end
+	if SCRIPT_TYPES[className] then
+		for _, c in ipairs(parent:GetChildren()) do
+			if c.Name == name and c.ClassName == className then return c end
+		end
+	end
+	return nil
+end
+
 local handlers = {}
+
+local function getGameInfo()
+	local placeId = 0
+	local success, err = pcall(function()
+		placeId = game:GetService("StudioService"):GetPlaceID()
+	end)
+	if not success then placeId = 0 end
+
+	local universeId = 0
+	success, err = pcall(function()
+		local sm = game:GetService("StudioService")
+		if rawget(sm, "GetUniverseID") then
+			universeId = sm:GetUniverseID()
+		end
+	end)
+	if not success or universeId == 0 then
+		pcall(function()
+			local http = game:GetService("HttpService")
+			local placeIdStr = tostring(placeId)
+			local url = "https://games.roblox.com/v1/games?universeIds=" .. placeIdStr
+			local result = http:GetAsync(url)
+			local data = http:JSONDecode(result)
+			if data and data.data and #data.data > 0 then
+				universeId = data.data[1].universeId or 0
+			end
+		end)
+	end
+
+	local gameName = "Untitled"
+	pcall(function()
+		gameName = game.Name
+	end)
+
+	local creatorName = "Unknown"
+	local creatorType = "User"
+	pcall(function()
+		local info = game:GetService("MarketplaceService"):GetProductInfo(placeId)
+		if info then
+			creatorName = info.Creator.Name or "Unknown"
+			creatorType = info.Creator.CreatorTypeLabel or "User"
+		end
+	end)
+
+	local playerCount = 0
+	pcall(function()
+		local APS = game:GetService("AnalyticsService")
+		if rawget(APS, "GetPlayerCount") then
+			playerCount = APS:GetPlayerCount() or 0
+		end
+	end)
+
+	local placeVersion = 0
+	pcall(function()
+		local vs = game:GetService("VersionControlService")
+		if rawget(vs, "GetPV") then
+			placeVersion = vs:GetPV() or 0
+		end
+	end)
+
+	local description = ""
+	pcall(function()
+		local info = game:GetService("MarketplaceService"):GetProductInfo(placeId)
+		if info then description = info.Description or "" end
+	end)
+
+	local playability = "Playable"
+	pcall(function()
+		local ts = game:GetService("TeamsService")
+		if not ts.AutoAssignable then playability = "Teams" end
+	end)
+
+	return {
+		name = gameName,
+		placeId = placeId,
+		universeId = universeId,
+		placeVersion = placeVersion,
+		creatorName = creatorName,
+		creatorType = creatorType,
+		playerCount = playerCount,
+		playability = playability,
+		description = description,
+	}
+end
+
+handlers["/game/info"] = function()
+	return getGameInfo()
+end
 
 handlers["/ping"] = function()
 	return { status = "ok", plugin = PLUGIN_NAME }
@@ -633,8 +737,18 @@ end
 handlers["/instance/create"] = function(data)
 	local parent = getInstanceFromPath(data.parent)
 	if not parent then error("Parent not found: " .. data.parent) end
+	local name = data.name or ("New" .. data.className)
+
+	-- Deduplication: for scripts, check if one with same name already exists
+	if SCRIPT_TYPES[data.className] then
+		local existing = findExistingInstance(parent, name, data.className)
+		if existing then
+			return { path = getInstancePath(existing), reused = true }
+		end
+	end
+
 	local instance = Instance.new(data.className)
-	if data.name then instance.Name = data.name end
+	instance.Name = name
 	instance.Parent = parent
 	return { path = getInstancePath(instance) }
 end
@@ -740,6 +854,18 @@ handlers["/instance/search"] = function(data)
 	return results
 end
 
+handlers["/instance/find"] = function(data)
+	local parent = getInstanceFromPath(data.parent or "game")
+	if not parent then error("Parent not found: " .. (data.parent or "game")) end
+	local name = data.name
+	if not name then error("name is required for /instance/find") end
+	local instance = parent:FindFirstChild(name)
+	if instance then
+		return { found = true, path = getInstancePath(instance), className = instance.ClassName }
+	end
+	return { found = false }
+end
+
 handlers["/selection/get"] = function()
 	local results = {}
 	for _, instance in ipairs(Selection:Get()) do
@@ -835,6 +961,7 @@ local modifyingPaths = {
 
 local actionNames = {
 	["/ping"] = "Ping",
+	["/game/info"] = "Game Info",
 	["/script/get"] = "Read Script",
 	["/script/set"] = "Write Script",
 	["/script/edit"] = "Edit Script",
@@ -849,6 +976,7 @@ local actionNames = {
 	["/instance/bulk-delete"] = "Bulk Delete",
 	["/instance/bulk-set"] = "Bulk Update",
 	["/instance/search"] = "Search",
+	["/instance/find"] = "Find Instance",
 	["/selection/get"] = "Get Selection",
 	["/asset/insert"] = "Insert Asset",
 	["/code/run"] = "Run Code",

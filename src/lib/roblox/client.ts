@@ -257,3 +257,40 @@ export async function isBridgeRunning(): Promise<boolean> {
     return false;
   }
 }
+
+const _cache = new Map<string, { data: unknown; expires: number }>();
+const SCRIPT_TTL = 30_000;
+const INSTANCE_TTL = 5_000;
+
+function _cachedGet<T>(key: string): T | null {
+  const entry = _cache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expires) { _cache.delete(key); return null; }
+  return entry.data as T;
+}
+
+function _cachedSet(key: string, data: unknown, ttl: number): void {
+  _cache.set(key, { data, expires: Date.now() + ttl });
+}
+
+export async function cachedStudioRequest<T>(
+  endpoint: string,
+  params?: Record<string, unknown>,
+  ttlMs?: number,
+): Promise<StudioResponse<T>> {
+  const cacheKey = `${endpoint}:${params ? JSON.stringify(params) : ""}`;
+  const cached = _cachedGet<T>(cacheKey);
+  if (cached !== null) return { success: true, data: cached };
+  const result = await studioRequest<T>(endpoint, params);
+  if (result.success) {
+    _cachedSet(cacheKey, result.data, ttlMs ?? (endpoint.startsWith("/script/") ? SCRIPT_TTL : INSTANCE_TTL));
+  }
+  return result;
+}
+
+export function invalidateCache(pattern?: string): void {
+  if (!pattern) { _cache.clear(); return; }
+  for (const key of _cache.keys()) {
+    if (key.includes(pattern)) _cache.delete(key);
+  }
+}

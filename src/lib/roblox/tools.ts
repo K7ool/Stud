@@ -6,7 +6,7 @@
 
 import { tool } from "ai"
 import { z } from "zod"
-import { studioRequest, isStudioConnected, notConnectedError } from "./client"
+import { studioRequest, isStudioConnected, notConnectedError, cachedStudioRequest, invalidateCache } from "./client"
 import { searchToolbox, getAssetDetails, type AssetCategory } from "./toolbox"
 import * as fileOps from "@/lib/file-ops"
 
@@ -55,7 +55,7 @@ Examples:
       return { error: notConnectedError() }
     }
 
-    const result = await studioRequest<ScriptContent>("/script/get", { path })
+    const result = await cachedStudioRequest<ScriptContent>("/script/get", { path }, 30_000)
     if (!result.success) {
       return { error: result.error }
     }
@@ -91,6 +91,7 @@ The path should be the full instance path from game root.`,
     if (!result.success) {
       return { error: result.error }
     }
+    invalidateCache(path)
 
     const lines = source.split("\n").length
     return { success: true, path: result.data.path, lines }
@@ -126,6 +127,7 @@ Example:
     if (!result.success) {
       return { error: result.error }
     }
+    invalidateCache(path)
 
     return { success: true, path: result.data.path, replacements: result.data.replaced }
   },
@@ -154,7 +156,7 @@ Examples:
       return { error: notConnectedError() }
     }
 
-    const result = await studioRequest<InstanceInfo[]>("/instance/children", { path, recursive })
+    const result = await cachedStudioRequest<InstanceInfo[]>("/instance/children", { path, recursive }, 5_000)
     if (!result.success) {
       return { error: result.error }
     }
@@ -189,7 +191,7 @@ Useful for understanding what can be modified on an instance.`,
       return { error: notConnectedError() }
     }
 
-    const result = await studioRequest<PropertyInfo[]>("/instance/properties", { path })
+    const result = await cachedStudioRequest<PropertyInfo[]>("/instance/properties", { path }, 5_000)
     if (!result.success) {
       return { error: result.error }
     }
@@ -223,6 +225,7 @@ The value is parsed based on the property type:
     if (!result.success) {
       return { error: result.error }
     }
+    invalidateCache(path)
 
     return { success: true, path: result.data.path, property, value }
   },
@@ -273,6 +276,8 @@ Use with caution - this cannot be undone through the tool.`,
     if (!result.success) {
       return { error: result.error }
     }
+
+    invalidateCache(path)
 
     return { success: true, deleted: result.data.deleted }
   },
