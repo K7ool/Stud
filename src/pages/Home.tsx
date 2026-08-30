@@ -52,6 +52,8 @@ import {
 import { Maximize2 } from "lucide-react";
 import { ArrowUp, Square, CheckCircle2, Download, FolderOpen, RefreshCw, Box, FileText, Globe, Play, ListTodo, Settings, Sparkles, Paperclip, X, Image, File, MessageSquarePlus, Trash2, Map, Lightbulb } from "lucide-react";
 
+const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
+
 const SUGGESTIONS = [
   // Gameplay systems
   "Create an NPC that follows players",
@@ -202,7 +204,10 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
       {/* Minimal header */}
       <header className="flex items-center justify-between px-6 py-4">
         <Logo />
-        <SettingsDialog />
+        <div className="flex items-center gap-2">
+          <StudioPairing />
+          <SettingsDialog />
+        </div>
       </header>
 
       {/* Centered content */}
@@ -221,6 +226,19 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
             </p>
           </div>
 
+          {/* Web pairing instructions */}
+          {isWebMode && (
+            <div className="bg-card rounded-2xl border border-border p-5 space-y-3">
+              <h2 className="font-medium text-foreground">Pair with Roblox Studio</h2>
+              <ol className="text-sm text-muted-foreground space-y-1.5 list-decimal list-inside">
+                <li>Click <span className="font-medium text-foreground">Connect Studio</span> above to get a 6-character code</li>
+                <li>In Roblox Studio, open the stud-bridge plugin's dock widget</li>
+                <li>Type the code into the <span className="font-medium text-foreground">Pair with Web App</span> field, click <span className="font-medium text-foreground">Pair</span></li>
+                <li>The plugin will link with this site within a few seconds</li>
+              </ol>
+            </div>
+          )}
+
           {/* Connection steps */}
           <div className="bg-card rounded-2xl border border-border p-6 space-y-6">
             <ConnectionStep
@@ -229,18 +247,18 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
               description="The bridge server starts automatically with this app"
               status={getStepStatus(1)}
             />
-            
+
             <div className="border-l-2 border-dashed border-border ml-4 h-4" />
-            
+
             <ConnectionStep
               step={2}
               title="Open Roblox Studio"
               description="Launch Roblox Studio and open your project"
               status={getStepStatus(2)}
             />
-            
+
             <div className="border-l-2 border-dashed border-border ml-4 h-4" />
-            
+
             <ConnectionStep
               step={3}
               title="Connect stud-bridge Plugin"
