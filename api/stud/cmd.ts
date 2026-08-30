@@ -2,7 +2,12 @@
  * GET /api/stud/cmd?site=X
  *
  * Plugin polls this. Returns the pending command (if any) for the given site,
- * or 204 No Content. Stateless: just reads from the shared cache.
+ * or 204 No Content. Stateless.
+ *
+ * We don't auto-clear the command after delivery because the plugin
+ * handles each id uniquely — if it receives the same command twice
+ * (e.g. concurrent polls), the duplicate id means the response handler
+ * will just discard the second result. Commands expire after 30s anyway.
  */
 import { getPendingCommand } from "./cache";
 

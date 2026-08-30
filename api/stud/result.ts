@@ -4,9 +4,10 @@
  *
  * GET /api/stud/result?site=X&id=Y  (web polls)
  *
- * Plugin posts the result for a request; web polls for it. Stateless.
+ * Plugin posts the result for a request; web polls for it.
+ * On GET, the result is deleted so subsequent polls return 204.
  */
-import { getResult, setResult } from "./cache";
+import { getResult, setResult, cacheDel } from "./cache";
 
 export const config = { runtime: "edge" };
 
@@ -69,6 +70,9 @@ export default async function handler(req: Request): Promise<Response> {
     if (!result) {
       return cors(new Response(null, { status: 204 }));
     }
+
+    // Consume so subsequent polls return 204
+    await cacheDel(`stud:res:${site}:${id}`);
 
     let parsed: any = null;
     try {

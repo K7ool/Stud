@@ -3,9 +3,9 @@
  * Body: { id, path, body }
  *
  * Web app pushes a command. The next plugin poll on /api/stud/cmd will pick it
- * up. Stateless — just writes to the shared cache.
+ * up. Stateless — just writes to Upstash (or in-memory fallback).
  */
-import { setPendingCommand } from "./cache";
+import { setPendingCommand, clearPendingCommand } from "./cache";
 
 export const config = { runtime: "edge" };
 
@@ -43,6 +43,9 @@ export default async function handler(req: Request): Promise<Response> {
       status: 400, headers: { "Content-Type": "application/json" },
     }));
   }
+
+  // Clear any stale command first
+  await clearPendingCommand(site);
 
   await setPendingCommand(site, {
     id: payload.id,

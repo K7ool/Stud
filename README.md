@@ -44,23 +44,25 @@ The Studio plugin cannot connect directly to a public website. The website acts 
 
 **How it works under the hood:**
 
-- `POST /api/pair/create` — generates the code, stores `{code → connected:false}` in Vercel KV
-- `GET  /api/studio/poll?code=...` — poll loop; marks the pair as connected, returns queued requests
-- `POST /api/studio/respond?code=...` — plugin posts results back into KV
-- `POST /api/studio/request` — web app queues a command and polls KV for the plugin's response (60s timeout)
+- `POST /api/stud/plugin?site=X` — generates a personalized plugin file with the user's siteId baked in
+- `POST /api/stud/push?site=X` — web app queues a command
+- `GET  /api/stud/cmd?site=X` — plugin polls; returns any queued command or 204
+- `POST /api/stud/result?site=X` — plugin posts its response
+- `GET  /api/stud/result?site=X&id=Y` — web app polls for the response
 
-Pairings live in **Vercel KV** so they survive across Edge function instances and cold starts. **You must create a KV store and bind it to your project** — without it, pairings only work within a single Edge instance and will appear "connected" then immediately "disconnected" as traffic splits across instances.
+Commands and results are stored in **Upstash Redis** (free tier, REST API). The relay is stateless otherwise.
 
-**Vercel KV setup:**
+**Upstash Redis setup (free, 2 minutes):**
 
-1. Go to https://vercel.com/dashboard → your project → **Storage** tab
-2. Click **Create Database** → **KV**
-3. Pick a region close to your users
-4. Click **Connect** → choose your Stud project
-5. Vercel automatically injects `KV_REST_API_URL` and `KV_REST_API_TOKEN` into your project's environment
-6. Redeploy — the relay now uses shared KV
+1. Sign up at https://upstash.com (or use the agent-created DB)
+2. Create a Redis database, pick a region close to your users
+3. Copy the **REST URL** and **REST Token** from the database details
+4. In Vercel dashboard → your project → **Settings** → **Environment Variables**, add:
+ - `KV_REST_API_URL` = your REST URL
+ - `KV_REST_API_TOKEN` = your REST token
+5. **Redeploy**
 
-Without KV, the code falls back to per-instance in-memory state and pairings will be inconsistent across Edge regions.
+Without Upstash, the relay falls back to per-instance in-memory storage and only works when push/poll/respond all land on the same Edge instance. The plugin will appear connected but commands will hang.
 
 ## What does not work on the web
 
