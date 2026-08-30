@@ -10,7 +10,10 @@ import { robloxTools } from "@/lib/roblox";
 import { z } from "zod";
 
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
+const CODEX_PROXY_ENDPOINT = "/api/codex";
 const MAX_ITERATIONS = 100; // Allow many tool call iterations for complex tasks
+
+const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
 
 export interface CodexMessage {
   role: "user" | "assistant";
@@ -160,9 +163,11 @@ async function makeCodexRequest(
     headers["ChatGPT-Account-Id"] = auth.accountId;
   }
 
-  console.log("[CodexChat] Making request with", input.length, "input items");
+  const endpoint = isWebMode ? CODEX_PROXY_ENDPOINT : CODEX_API_ENDPOINT;
 
-  const response = await tauriFetch(CODEX_API_ENDPOINT, {
+  console.log("[CodexChat] Making request with", input.length, "input items", isWebMode ? "(via proxy)" : "");
+
+  const response = await tauriFetch(endpoint, {
     method: "POST",
     headers,
     body: JSON.stringify(body),

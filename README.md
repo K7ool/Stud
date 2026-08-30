@@ -26,6 +26,7 @@ npm run build    # → dist/
 - Settings (theme, model selection, provider keys stored locally)
 - Prompt suggestions, file browser (mock), code blocks, markdown rendering
 - AI requests via the Vercel AI SDK (requires your own provider API keys configured in Settings)
+- ChatGPT Plus/Pro (Codex) — proxied through `/api/codex` serverless function to bypass browser CORS restrictions on `chatgpt.com`
 
 ## What does not work on the web
 

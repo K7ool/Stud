@@ -12,6 +12,8 @@ const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const ISSUER = "https://auth.openai.com";
 // Use Tauri HTTP plugin to bypass CORS when calling Codex API
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
+const CODEX_PROXY_ENDPOINT = "/api/codex";
+const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
 const OAUTH_PORT = 1455;
 const REDIRECT_URI = `http://localhost:${OAUTH_PORT}/auth/callback`;
 
@@ -307,8 +309,9 @@ export async function codexFetch(
     headers["ChatGPT-Account-Id"] = auth.accountId;
   }
 
-  // Use Tauri's fetch which bypasses CORS
-  const response = await tauriFetch(CODEX_API_ENDPOINT, {
+  const endpoint = isWebMode ? CODEX_PROXY_ENDPOINT : CODEX_API_ENDPOINT;
+
+  const response = await tauriFetch(endpoint, {
     ...init,
     headers,
   });

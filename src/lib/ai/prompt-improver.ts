@@ -67,6 +67,8 @@ interface ImproveResult {
 }
 
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
+const CODEX_PROXY_ENDPOINT = "/api/codex";
+const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
 
 /**
  * Improve a prompt using the Codex API (ChatGPT Plus/Pro)
@@ -112,7 +114,8 @@ async function improveWithCodex(prompt: string): Promise<ImproveResult> {
   try {
     console.log("[PromptImprover] Making Codex request...");
 
-    const response = await tauriFetch(CODEX_API_ENDPOINT, {
+    const endpoint = isWebMode ? CODEX_PROXY_ENDPOINT : CODEX_API_ENDPOINT;
+    const response = await tauriFetch(endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
