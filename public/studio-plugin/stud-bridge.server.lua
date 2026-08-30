@@ -235,9 +235,9 @@ local function createWidget()
 		true,  -- Initially enabled
 		false, -- Override previous state
 		280,   -- Width
-		320,   -- Height
+		360,   -- Height
 		260,   -- Min width
-		280    -- Min height
+		320    -- Min height
 	)
 	
 	widget = plugin:CreateDockWidgetPluginGui("StudBridge", info)
@@ -357,7 +357,7 @@ local function createWidget()
 	-- ========== Web Pairing Card ==========
 	local pairCard = createFrame({
 		bg = Colors.bgSecondary,
-		size = UDim2.new(1, 0, 0, 100),
+		size = UDim2.new(1, 0, 0, 110),
 		corner = 14,
 		parent = container
 	})
@@ -428,7 +428,7 @@ local function createWidget()
 		size = UDim2.new(1, 0, 0, 16),
 		parent = container
 	})
-	activityHeader.LayoutOrder = 3
+	activityHeader.LayoutOrder = 4
 	
 	activityContainer = createFrame({
 		bg = Colors.bgSecondary,
@@ -436,7 +436,7 @@ local function createWidget()
 		corner = 14,
 		parent = container
 	})
-	activityContainer.LayoutOrder = 4
+	activityContainer.LayoutOrder = 5
 	activityContainer.ClipsDescendants = true
 	
 	-- Scrolling frame for activity
@@ -1145,52 +1145,72 @@ end
 -- Polling loop
 local function pollServer()
 	local failCount = 0
-	local maxFails = 3
-	
+	local maxFails = 30
+
 	while pollingEnabled do
-		local success, response = pcall(function()
+		local ok, response = pcall(function()
 			return HttpService:RequestAsync({
 				Url = POLL_URL,
 				Method = "GET",
 			})
 		end)
-		
-		if success and response.Success then
-			-- Connected!
+
+		if ok and response and response.Success then
+			-- Poll succeeded
+			failCount = 0
 			if not isConnected then
 				isConnected = true
 				isConnecting = false
-				failCount = 0
 				updateUI()
 				addActivity("Connected", "success")
-				print("[stud-bridge] Connected to Stud Desktop")
+				print("[stud-bridge] Connected to relay")
 			end
-			
-			local data = jsonDecode(response.Body)
-			
-			-- Extract project info if available
+
+			local data = jsonDecode(response.Body or "{}")
+
+			-- The relay returns { request: { id, path, body } | null, project?: string }
 			if data and data.project then
 				projectInfo = data.project
 				updateUI()
 			end
-			
+
 			if data and data.request then
-				local result = handleRequest(data.request)
-				pcall(function()
-					HttpService:RequestAsync({
-						Url = RESPOND_URL,
-						Method = "POST",
-						Headers = { ["Content-Type"] = "application/json" },
-						Body = jsonEncode({
-							id = data.id,
-							response = result,
-						}),
-					})
-				end)
+				local req = data.request
+				local reqId = req.id
+				local ok2, result = pcall(handleRequest, req)
+				if not ok2 then
+					print("[stud-bridge] handler error:", tostring(result))
+				end
+				if reqId then
+					local ok3, respondErr = pcall(function()
+						return HttpService:RequestAsync({
+							Url = RESPOND_URL,
+							Method = "POST",
+							Headers = { ["Content-Type"] = "application/json" },
+							Body = jsonEncode({
+								id = reqId,
+								response = result,
+							}),
+						})
+					end)
+					if not ok3 then
+						print("[stud-bridge] respond failed:", tostring(respondErr))
+					end
+				end
 			end
-			failCount = 0
 		else
+			-- Poll failed
 			failCount = failCount + 1
+			local errMsg = ""
+			if not ok then
+				errMsg = tostring(response)
+			elseif response then
+				errMsg = "HTTP " .. tostring(response.StatusCode or response.Status)
+			end
+			if failCount == 1 or failCount % 30 == 0 then
+				print(string.format("[stud-bridge] poll failed (%d): %s — URL: %s",
+					failCount, errMsg, POLL_URL))
+			end
 			if isConnected and failCount >= maxFails then
 				isConnected = false
 				isConnecting = true
@@ -1200,11 +1220,10 @@ local function pollServer()
 				print("[stud-bridge] Connection lost, retrying...")
 			end
 		end
-		
+
 		task.wait(0.1)
 	end
-	
-	-- Stopped polling
+
 	isConnected = false
 	isConnecting = false
 	projectInfo = nil
