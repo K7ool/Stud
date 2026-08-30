@@ -44,12 +44,23 @@ The Studio plugin cannot connect directly to a public website. The website acts 
 
 **How it works under the hood:**
 
-- `POST /api/pair/create` — generates the code, stores `{code → connected:false}` in an Edge-runtime Map
-- `GET  /api/studio/poll?code=...` — poll loop; first call marks the pair as connected, subsequent calls return queued requests
-- `POST /api/studio/respond?code=...` — plugin posts results back
-- `POST /api/studio/request` — web app queues a command and waits for the plugin's response
+- `POST /api/pair/create` — generates the code, stores `{code → connected:false}` in Vercel KV
+- `GET  /api/studio/poll?code=...` — poll loop; marks the pair as connected, returns queued requests
+- `POST /api/studio/respond?code=...` — plugin posts results back into KV
+- `POST /api/studio/request` — web app queues a command and polls KV for the plugin's response (60s timeout)
 
-Pairings are ephemeral (5 min to claim, 30 min active TTL). They live in module-scope Maps on the Vercel Edge runtime — cold starts reset them.
+Pairings live in **Vercel KV** so they survive across Edge function instances and cold starts. **You must create a KV store and bind it to your project** — without it, pairings only work within a single Edge instance and will appear "connected" then immediately "disconnected" as traffic splits across instances.
+
+**Vercel KV setup:**
+
+1. Go to https://vercel.com/dashboard → your project → **Storage** tab
+2. Click **Create Database** → **KV**
+3. Pick a region close to your users
+4. Click **Connect** → choose your Stud project
+5. Vercel automatically injects `KV_REST_API_URL` and `KV_REST_API_TOKEN` into your project's environment
+6. Redeploy — the relay now uses shared KV
+
+Without KV, the code falls back to per-instance in-memory state and pairings will be inconsistent across Edge regions.
 
 ## What does not work on the web
 

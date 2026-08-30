@@ -1,39 +1,28 @@
 /**
  * POST /api/studio/respond?code=XXXXXX
- * Body: { id, status, body }
+ * Body: { id, response: { status, body } }
  *
- * Called by the plugin to deliver the response to a previously polled
- * request. Resolves the HTTP call waiting in /api/studio/request.
+ * Plugin delivers its response to a previously polled request. The pending
+ * HTTP request in /api/studio/request (which polls KV for the response)
+ * picks it up.
  */
+import { kvGet, kvSet, kvDel, type Pair } from "../kv";
+
 export const config = { runtime: "edge" };
-
-interface Pair {
-  connected: boolean;
-  project: string | null;
-  createdAt: number;
-  pendingRequest: { id: string; path: string; body: string | null } | null;
-  pendingResolvers: Map<string, (response: any) => void>;
-}
-
-const PAIRS: Map<string, Pair> =
-  ((globalThis as any).__STUD_PAIRS ??= new Map());
 
 function cors(res: Response): Response {
   res.headers.set("Access-Control-Allow-Origin", "*");
   res.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.headers.set("Access-Control-Allow-Headers", "Content-Type, X-Pair-Code");
-  return res;
+  return cors;
 }
 
 export default async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") return cors(new Response(null, { status: 204 }));
+  if (req.method !== "POST") return cors(new Response("POST required", { status: 405 }));
 
   const url = new URL(req.url);
   const code = (url.searchParams.get("code") ?? "").toUpperCase();
-
-  if (req.method !== "POST") {
-    return cors(new Response("POST required", { status: 405 }));
-  }
 
   let payload: any;
   try {
@@ -51,30 +40,15 @@ export default async function handler(req: Request): Promise<Response> {
     }));
   }
 
-  const entry = PAIRS.get(code);
-  if (!entry) {
-    return cors(new Response(JSON.stringify({ error: "Unknown pair" }), {
-      status: 404, headers: { "Content-Type": "application/json" },
-    }));
-  }
+  // Store the response under a per-id key so /studio/request can pick it up.
+  const inner = payload.response ?? payload;
+  await kvSet(
+    `resp:${code}:${id}`,
+    { status: inner.status ?? 200, body: inner.body ?? null },
+    60,
+  );
 
-  const resolver = entry.pendingResolvers.get(id);
-  if (resolver) {
-    entry.pendingResolvers.delete(id);
-    // The plugin wraps its reply as { id, response: { status, body } }.
-    // Unwrap to keep the protocol symmetric with the original /stud/respond.
-    const inner = payload.response ?? payload;
-    resolver({
-      id,
-      status: inner.status ?? 200,
-      body: inner.body ?? null,
-    });
-    return cors(new Response(JSON.stringify({ ok: true }), {
-      status: 200, headers: { "Content-Type": "application/json" },
-    }));
-  }
-
-  return cors(new Response(JSON.stringify({ ok: true, late: true }), {
+  return cors(new Response(JSON.stringify({ ok: true }), {
     status: 200, headers: { "Content-Type": "application/json" },
   }));
 }

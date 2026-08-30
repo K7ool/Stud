@@ -1,18 +1,10 @@
 /**
  * POST /api/pair/create
- * Creates a fresh 6-character pairing code valid for 5 minutes.
- * Returns { code, expiresAt }.
- *
- * Module-scope Map is shared via globalThis to survive HMR within a single
- * Edge instance lifetime. Edge cold starts will reset pairings — acceptable
- * because each code is short-lived.
+ * Creates a fresh 6-character pairing code valid for 5 minutes to claim.
  */
+import { kvSet } from "./kv";
+
 export const config = { runtime: "edge" };
-
-const PAIRS: Map<string, { connected: boolean; project: string | null; createdAt: number }> =
-  ((globalThis as any).__STUD_PAIRS ??= new Map());
-
-const PAIR_TTL_MS = 5 * 60_000;
 
 function genCode(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -31,17 +23,16 @@ function cors(res: Response): Response {
 export default async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") return cors(new Response(null, { status: 204 }));
 
-  const now = Date.now();
-  for (const [code, entry] of PAIRS) {
-    if (!entry.connected && now - entry.createdAt > PAIR_TTL_MS) {
-      PAIRS.delete(code);
-    }
-  }
-
   const code = genCode();
-  PAIRS.set(code, { connected: false, project: null, createdAt: now });
+  const now = Date.now();
+  await kvSet(code, {
+    connected: false,
+    project: null,
+    createdAt: now,
+    pendingRequest: null,
+  }, 5 * 60); // 5-minute TTL to claim
 
-  return cors(new Response(JSON.stringify({ code, expiresAt: now + PAIR_TTL_MS }), {
+  return cors(new Response(JSON.stringify({ code, expiresAt: now + 5 * 60_000 }), {
     status: 200,
     headers: { "Content-Type": "application/json" },
   }));

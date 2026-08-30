@@ -2,10 +2,9 @@
  * GET /api/studio/status?code=XXXXXX
  * Returns { connected, project }.
  */
-export const config = { runtime: "edge" };
+import { kvGet } from "../kv";
 
-const PAIRS: Map<string, { connected: boolean; project: string | null; createdAt: number }> =
-  ((globalThis as any).__STUD_PAIRS ??= new Map());
+export const config = { runtime: "edge" };
 
 function cors(res: Response): Response {
   res.headers.set("Access-Control-Allow-Origin", "*");
@@ -19,10 +18,10 @@ export default async function handler(req: Request): Promise<Response> {
 
   const url = new URL(req.url);
   const code = (url.searchParams.get("code") ?? "").toUpperCase();
-  const entry = PAIRS.get(code);
+  const pair = await kvGet(code);
 
   return cors(new Response(JSON.stringify({
-    connected: !!entry?.connected,
-    project: entry?.project ?? null,
+    connected: !!pair?.connected,
+    project: pair?.project ?? null,
   }), { status: 200, headers: { "Content-Type": "application/json" } }));
 }

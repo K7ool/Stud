@@ -4,47 +4,39 @@
  * Body:   { path, body }
  *
  * Queues a request for the plugin to pick up on its next /api/studio/poll,
- * and waits (up to 60s) for /api/studio/respond to deliver the result.
+ * then polls KV for the matching response (written by /api/studio/respond).
  */
+import { kvGet, kvSet, type Pair } from "../kv";
+
 export const config = { runtime: "edge" };
 
-interface Pair {
-  connected: boolean;
-  project: string | null;
-  createdAt: number;
-  pendingRequest: { id: string; path: string; body: string | null } | null;
-  pendingResolvers: Map<string, (response: any) => void>;
-}
-
-const PAIRS: Map<string, Pair> =
-  ((globalThis as any).__STUD_PAIRS ??= new Map());
-
 const REQUEST_TIMEOUT_MS = 60_000;
+const POLL_INTERVAL_MS = 100;
 
 function cors(res: Response): Response {
   res.headers.set("Access-Control-Allow-Origin", "*");
   res.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.headers.set("Access-Control-Allow-Headers", "Content-Type, X-Pair-Code");
-  return res;
+  return cors;
 }
 
 export default async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") return cors(new Response(null, { status: 204 }));
 
   const code = (req.headers.get("x-pair-code") ?? "").toUpperCase();
-  const entry = PAIRS.get(code);
+  const pair = await kvGet(code);
 
-  if (!entry) {
+  if (!pair) {
     return cors(new Response(JSON.stringify({ error: "Invalid or expired pairing code" }), {
       status: 401, headers: { "Content-Type": "application/json" },
     }));
   }
-  if (!entry.connected) {
+  if (!pair.connected) {
     return cors(new Response(JSON.stringify({ error: "Studio plugin not connected" }), {
       status: 503, headers: { "Content-Type": "application/json" },
     }));
   }
-  if (entry.pendingRequest) {
+  if (pair.pendingRequest) {
     return cors(new Response(JSON.stringify({ error: "Plugin busy with another request" }), {
       status: 429, headers: { "Content-Type": "application/json" },
     }));
@@ -72,29 +64,43 @@ export default async function handler(req: Request): Promise<Response> {
 
   const body = typeof payload.body === "string" ? payload.body : null;
 
-  return cors(new Promise<Response>((resolve) => {
-    const timer = setTimeout(() => {
-      entry.pendingResolvers.delete(id);
-      entry.pendingRequest = null;
-      resolve(new Response(JSON.stringify({ id, error: "Studio request timed out" }), {
-        status: 504, headers: { "Content-Type": "application/json" },
-      }));
-    }, REQUEST_TIMEOUT_MS);
+  // Queue the request
+  const updated: Pair = { ...pair, pendingRequest: { id, path, body } };
+  await kvSet(code, updated, 30 * 60);
 
-    entry.pendingResolvers.set(id, (response: any) => {
-      clearTimeout(timer);
-      let parsed: any;
+  // Poll for response
+  const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    const resp = await kvGet<{ status: number; body: string | null }>(`resp:${code}:${id}`);
+    if (resp) {
+      // Cleanup
       try {
-        parsed = response.body ? JSON.parse(response.body) : null;
-      } catch {
-        parsed = null;
-      }
-      resolve(new Response(JSON.stringify(parsed ?? { error: "Empty response" }), {
-        status: response.status ?? 200,
+        const { kvDel } = await import("../kv");
+        await kvDel(`resp:${code}:${id}`);
+      } catch {}
+
+      let parsed: any = null;
+      try {
+        parsed = resp.body ? JSON.parse(resp.body) : null;
+      } catch {}
+
+      return cors(new Response(JSON.stringify(parsed ?? { error: "Empty response" }), {
+        status: resp.status ?? 200,
         headers: { "Content-Type": "application/json" },
       }));
-    });
+    }
+  }
 
-    entry.pendingRequest = { id, path, body };
+  // Timeout — clear pendingRequest so future requests don't get stuck
+  const cleared = await kvGet(code);
+  if (cleared && cleared.pendingRequest?.id === id) {
+    cleared.pendingRequest = null;
+    await kvSet(code, cleared, 30 * 60);
+  }
+
+  return cors(new Response(JSON.stringify({ id, error: "Studio request timed out" }), {
+    status: 504, headers: { "Content-Type": "application/json" },
   }));
 }
