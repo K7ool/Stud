@@ -4,29 +4,43 @@
 	Connects Roblox Studio to the Stud web app via a stateless HTTP relay.
 	The plugin polls the relay for commands and posts results back.
 
-	SETUP:
-	1. Open the Stud web app at https://stud-weld.vercel.app
-	2. Open browser DevTools → Application → Local Storage → find the key
-	   `stud:siteId` (a 16-character lowercase alphanumeric string).
-	   If it doesn't exist, open the site once and reload.
-	3. Copy that siteId value.
-	4. Edit the PLUGIN_SITE_ID constant below to match.
-	5. (Optional) Edit PLUGIN_RELAY_BASE if you self-host the relay.
-	6. Save this file in your Roblox Plugins folder and restart Studio.
+	HOW TO USE:
+	1. Open the Stud web app (e.g. https://stud-weld.vercel.app) in your browser.
+	2. Click "Download Plugin" — you'll get a copy with YOUR unique siteId
+	   already baked into the URL.
+	3. Save the downloaded file to your Roblox Plugins folder:
+	     Windows: %LOCALAPPDATA%\Roblox\Plugins
+	     Mac:     ~/Documents/Roblox/Plugins
+	4. Restart Roblox Studio.
+	5. The plugin auto-connects and the web app can now drive Studio.
 
-	The plugin will auto-connect when Studio opens. No pairing code needed.
+	The siteId is read from the URL itself, so the plugin works without
+	any manual configuration.
 ]]
 
 local PLUGIN_NAME = "stud-bridge"
 local PLUGIN_DISPLAY_NAME = "Stud"
 
--- === EDIT THIS ===
-local PLUGIN_SITE_ID = ""  -- paste the 16-char siteId from browser localStorage here
+-- These are placeholders; the real values come from PLUGIN_URL_OVERRIDE
+-- (set when the user downloads the plugin from the website).
 local PLUGIN_RELAY_BASE = "https://stud-weld.vercel.app"
--- ===================
+local PLUGIN_SITE_ID = ""
+local PLUGIN_URL_OVERRIDE = ""  -- e.g. "https://.../api/stud/cmd?site=abc123"
+local POLL_URL
+local RESULT_URL
 
-local POLL_URL = PLUGIN_RELAY_BASE .. "/api/stud/cmd?site=" .. PLUGIN_SITE_ID
-local RESULT_URL = PLUGIN_RELAY_BASE .. "/api/stud/result?site=" .. PLUGIN_SITE_ID
+-- A downloaded plugin sets PLUGIN_URL_OVERRIDE so it auto-connects to the
+-- specific user's siteId. If empty (manually installed file), the user can
+-- edit PLUGIN_SITE_ID below.
+if PLUGIN_URL_OVERRIDE ~= "" then
+	POLL_URL = PLUGIN_URL_OVERRIDE
+	local site = POLL_URL:match("site=([%w]+)")
+	if site then PLUGIN_SITE_ID = site end
+	RESULT_URL = POLL_URL:gsub("/cmd%?site=", "/result?site=")
+else
+	POLL_URL = PLUGIN_RELAY_BASE .. "/api/stud/cmd?site=" .. PLUGIN_SITE_ID
+	RESULT_URL = PLUGIN_RELAY_BASE .. "/api/stud/result?site=" .. PLUGIN_SITE_ID
+end
 
 local MAX_ACTIVITY_LOG = 10
 

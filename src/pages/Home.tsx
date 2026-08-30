@@ -217,6 +217,30 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
             </p>
           </div>
 
+          {/* Web-mode: download plugin with embedded site ID */}
+          {isWebMode && (
+            <div className="bg-card rounded-2xl border-2 border-primary/30 p-5 space-y-3">
+              <h2 className="font-medium text-foreground text-lg">Download stud-bridge plugin</h2>
+              <p className="text-sm text-muted-foreground">
+                One-click download with your unique site ID baked in. Save the file to your
+                Roblox Plugins folder, enable HTTP requests in Game Settings → Security,
+                then restart Studio.
+              </p>
+              <Button
+                variant="default"
+                size="lg"
+                className="w-full"
+                onClick={handleDownloadPlugin}
+              >
+                <Download className="w-4 h-4 mr-2" />
+                Download stud-bridge plugin
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                Site ID: <span className="font-mono select-all">{getStudioSiteId()}</span>
+              </p>
+            </div>
+          )}
+
           {/* Connection steps */}
           <div className="bg-card rounded-2xl border border-border p-6 space-y-6">
             <ConnectionStep
@@ -244,36 +268,6 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
               status={getStepStatus(3)}
             />
           </div>
-
-          {isWebMode && (
-            <div className="bg-card rounded-2xl border border-border p-5 space-y-3">
-              <h2 className="font-medium text-foreground">Connect Roblox Studio to this site</h2>
-              <p className="text-sm text-muted-foreground">
-                Click the button below to download the plugin with your unique site ID already
-                baked in. Save the file to your Roblox Plugins folder and restart Studio.
-              </p>
-              <Button
-                variant="default"
-                size="lg"
-                className="w-full"
-                onClick={handleDownloadPlugin}
-              >
-                <Download className="w-4 h-4 mr-2" />
-                Download stud-bridge plugin
-              </Button>
-              <p className="text-xs text-muted-foreground">
-                Your site ID: <span className="font-mono select-all">{getStudioSiteId()}</span>
-              </p>
-              <div className="text-sm text-muted-foreground">
-                <p className="font-medium text-foreground mb-1">Install steps:</p>
-                <ol className="space-y-1 list-decimal list-inside">
-                  <li>Save the downloaded file to <code className="font-mono text-xs bg-muted px-1 rounded">%LOCALAPPDATA%\Roblox\Plugins</code> (Windows) or <code className="font-mono text-xs bg-muted px-1 rounded">~/Documents/Roblox/Plugins</code> (Mac)</li>
-                  <li>Enable HTTP requests in Game Settings → Security</li>
-                  <li>Restart Roblox Studio — the plugin auto-connects</li>
-                </ol>
-              </div>
-            </div>
-          )}
 
           {/* Plugin Installation Card */}
           <div className="bg-card rounded-2xl border border-border p-5 space-y-4">
