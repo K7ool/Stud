@@ -843,6 +843,42 @@ This is the verification step — always check the result.verified field in the 
 });
 
 // ============================================================================
+// Game Info Tool
+// ============================================================================
+
+export const robloxGetGameInfo = tool({
+  description: `Get information about the currently open Roblox game in Studio.
+
+Returns the game name, place ID, universe ID, version, creator info, player count, and description.
+Use this to understand what game is currently open before making changes.`,
+  inputSchema: z.object({}),
+  execute: async () => {
+    const connected = await isStudioConnected();
+    if (!connected) {
+      return { error: notConnectedError() };
+    }
+
+    const result = await studioRequest<{
+      name: string;
+      placeId: number;
+      universeId: number;
+      placeVersion: number;
+      creatorName: string;
+      creatorType: string;
+      playerCount: number;
+      playability: string;
+      description: string;
+    }>("/game/info");
+
+    if (!result.success) {
+      return { error: "Could not fetch game info. Make sure Roblox Studio is open with a place loaded." };
+    }
+
+    return result.data;
+  },
+});
+
+// ============================================================================
 // Agentic Tools
 // ============================================================================
 
@@ -1421,6 +1457,7 @@ export const robloxTools = {
   roblox_toolbox_get_asset: robloxToolboxGetAsset,
   roblox_toolbox_remove: robloxToolboxRemove,
   roblox_toolbox_inspect: robloxToolboxInspect,
+  roblox_get_game_info: robloxGetGameInfo,
 
   // Agentic tools
   roblox_ask_user: robloxAskUser,

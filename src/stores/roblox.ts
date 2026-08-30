@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { isStudioConnected, isBridgeRunning } from "@/lib/roblox";
+import { isStudioConnected, isBridgeRunning, getGameInfo, type GameInfo } from "@/lib/roblox";
 import { useChatStore } from "./chat";
 
 export type ConnectionStatus = "disconnected" | "bridge_only" | "connected" | "reconnecting";
@@ -11,12 +11,14 @@ export interface RobloxState {
   lastSuccessfulPoll: Date | null;
   consecutiveFailures: number;
   reconnectAttempts: number;
-  
+  gameInfo: GameInfo | null;
+
   // Actions
   setStatus: (status: ConnectionStatus) => void;
   checkConnection: () => Promise<void>;
   startPolling: () => () => void;
   attemptReconnection: () => Promise<void>;
+  fetchGameInfo: () => Promise<void>;
 }
 
 export const useRobloxStore = create<RobloxState>()((set, get) => ({
@@ -26,6 +28,7 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
   lastSuccessfulPoll: null,
   consecutiveFailures: 0,
   reconnectAttempts: 0,
+  gameInfo: null,
 
   setStatus: (status) => set({ status }),
   
@@ -63,6 +66,7 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
           // Wait a moment before declaring fully connected
           setTimeout(() => {
             set({ status: "connected", lastCheck: new Date() });
+            get().fetchGameInfo();
           }, 1000);
         } else {
           // Already connected, keep status
@@ -73,6 +77,7 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
             lastSuccessfulPoll: now,
             consecutiveFailures: 0,
           });
+          get().fetchGameInfo();
         }
       } else {
         // Bridge running but no client connected
@@ -183,6 +188,17 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
         status: "disconnected",
         error: "Connection failed - please check if Stud desktop app is running and the plugin is installed",
       });
+    }
+  },
+
+  fetchGameInfo: async () => {
+    const state = get();
+    if (state.status !== "connected" && state.status !== "bridge_only") return;
+    try {
+      const info = await getGameInfo();
+      set({ gameInfo: info });
+    } catch {
+      set({ gameInfo: null });
     }
   },
 }));

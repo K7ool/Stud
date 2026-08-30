@@ -179,19 +179,6 @@ export async function isStudioConnected(): Promise<boolean> {
   }
 }
 
-export async function isBridgeRunning(): Promise<boolean> {
-  if (isWebMode) return true;
-  try {
-    const response = await fetch(`${BRIDGE_URL}/stud/status`, {
-      method: "GET",
-      signal: AbortSignal.timeout(1000),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
 export function notConnectedError(): string {
   if (isWebMode) {
     return `Roblox Studio is not connected.
@@ -211,4 +198,62 @@ To use Roblox Studio tools:
 3. Install the Stud plugin from studio-plugin/ folder
 4. Enable the plugin in Studio
 5. The plugin will automatically connect to Stud`;
+}
+
+export interface GameInfo {
+  name: string;
+  placeId: number;
+  universeId: number;
+  placeVersion: number;
+  creatorName: string;
+  creatorType: string;
+  playerCount: number;
+  playability: string;
+  description: string;
+}
+
+export async function getGameInfo(): Promise<GameInfo | null> {
+  if (isWebMode) {
+    const site = getSiteId();
+    if (!site) return null;
+    try {
+      const res = await fetch(`${RELAY_BASE}/api/stud/request?site=${site}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "/game/info" }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data as GameInfo;
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    const response = await fetch(`${BRIDGE_URL}/stud/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: "/game/info" }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data as GameInfo;
+  } catch {
+    return null;
+  }
+}
+
+export async function isBridgeRunning(): Promise<boolean> {
+  if (isWebMode) return true;
+  try {
+    const response = await fetch(`${BRIDGE_URL}/stud/status`, {
+      method: "GET",
+      signal: AbortSignal.timeout(1000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }

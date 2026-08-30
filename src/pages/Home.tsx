@@ -51,7 +51,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Maximize2 } from "lucide-react";
-import { ArrowUp, Square, CheckCircle2, Download, FolderOpen, RefreshCw, Box, FileText, Globe, Play, ListTodo, Settings, Sparkles, Paperclip, X, Image, File, MessageSquarePlus, Trash2, Map, Lightbulb } from "lucide-react";
+import { ArrowUp, Square, CheckCircle2, Download, FolderOpen, RefreshCw, Box, FileText, Globe, Play, ListTodo, Settings, Sparkles, Paperclip, X, Image, File, MessageSquarePlus, Trash2, Map, Lightbulb, Users } from "lucide-react";
 
 const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
 
@@ -372,7 +372,7 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
 }
 
 // Status badge for the header
-function StatusBadge({ status }: { status: ConnectionStatus }) {
+function StatusBadge({ status, gameInfo }: { status: ConnectionStatus; gameInfo?: { name: string; placeId: number; playerCount: number } | null }) {
   const config = {
     disconnected: {
       color: "bg-zinc-400",
@@ -398,6 +398,23 @@ function StatusBadge({ status }: { status: ConnectionStatus }) {
     <div className="flex items-center gap-2 text-sm text-muted-foreground">
       <div className={cn("w-2 h-2 rounded-full", color)} />
       <span>{label}</span>
+      {status === "connected" && gameInfo && (
+        <>
+          <span className="text-border">|</span>
+          <span className="text-foreground font-medium truncate max-w-[200px]" title={gameInfo.name}>
+            {gameInfo.name}
+          </span>
+          <span className="text-muted-foreground text-xs">
+            ID:{gameInfo.placeId}
+          </span>
+          {gameInfo.playerCount > 0 && (
+            <span className="text-green-500 text-xs flex items-center gap-0.5">
+              <Users className="w-3 h-3" />
+              {gameInfo.playerCount}
+            </span>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -445,7 +462,7 @@ export function Home() {
 
   const messages = getCurrentMessages();
   const { hasApiKey } = useSettingsStore();
-  const { status: studioStatus, startPolling } = useRobloxStore();
+  const { status: studioStatus, startPolling, gameInfo, fetchGameInfo } = useRobloxStore();
   const { sendMessage } = useChat();
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -466,6 +483,13 @@ export function Home() {
     const cleanup = startPolling();
     return cleanup;
   }, [startPolling]);
+
+  // Fetch game info once connected
+  useEffect(() => {
+    if (studioStatus === "connected") {
+      fetchGameInfo();
+    }
+  }, [studioStatus, fetchGameInfo]);
 
   // Shuffle and pick random suggestions on mount and when messages clear
   useEffect(() => {
@@ -844,7 +868,7 @@ export function Home() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <StatusBadge status={studioStatus} />
+            <StatusBadge status={studioStatus} gameInfo={gameInfo} />
             <Button
               variant="ghost"
               size="icon"

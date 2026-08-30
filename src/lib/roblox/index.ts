@@ -1,4 +1,4 @@
-export { studioRequest, isStudioConnected, isBridgeRunning, notConnectedError, getStudioSiteId } from "./client"
+export { studioRequest, isStudioConnected, isBridgeRunning, notConnectedError, getStudioSiteId, getGameInfo, type GameInfo } from "./client"
 export { robloxTools } from "./tools"
 export {
   robloxGetScript,
@@ -17,4 +17,5 @@ export {
   robloxBulkCreate,
   robloxBulkDelete,
   robloxBulkSetProperty,
+  robloxGetGameInfo,
 } from "./tools"
