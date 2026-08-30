@@ -32,6 +32,8 @@ import { IntentSuggestions } from "@/components/chat/IntentSuggestions";
 import { ConnectionPopup } from "@/components/chat/ConnectionPopup";
 import { Sidebar } from "@/components/chat/Sidebar";
 import { MemoryDialog } from "@/components/chat/MemoryDialog";
+import { TaskPanel } from "@/components/chat/TaskPanel";
+import { ExecutionModeSelector } from "@/components/chat/ExecutionModeSelector";
 import { detectIntent, parseSlashCommand } from "@/lib/intents";
 import { useChatStore, Attachment } from "@/stores/chat";
 import { useSettingsStore } from "@/stores/settings";
@@ -41,8 +43,12 @@ import { useAuthStore } from "@/stores/auth";
 import { useUserAuthStore } from "@/stores/userAuth";
 import { useGameMapStore } from "@/stores/gameMap";
 import { useMemoryStore } from "@/stores/memory";
+import { useTaskStore } from "@/stores/tasks";
 import { useChat } from "@/lib/ai/providers";
 import { extractMemories, generateConversationTitle } from "@/lib/ai/memory-extract";
+import { classifyComplexity, resolveMode } from "@/lib/ai/complexity";
+import { buildProviderOptions } from "@/lib/ai/effort";
+import type { TaskStep } from "@/lib/chat/api";
 import { setAskUserHandler } from "@/lib/roblox/tools";
 import { getStudioSiteId } from "@/lib/roblox/client";
 import { autoDetectProject, setProjectPath, pickFolder } from "@/lib/file-ops";
@@ -54,7 +60,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Maximize2, Shield, User, Coins, PanelLeft } from "lucide-react";
+import { Maximize2, Shield, User, Coins, PanelLeft, ListChecks } from "lucide-react";
 import { ArrowUp, Square, CheckCircle2, Download, FolderOpen, RefreshCw, Box, FileText, Globe, Play, ListTodo, Settings, Sparkles, Paperclip, X, Image, File, MessageSquarePlus, Trash2, Map, Lightbulb, Users } from "lucide-react";
 
 const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
@@ -476,6 +482,7 @@ export function Home() {
   const [connectionRetrying, setConnectionRetrying] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [taskPanelOpen, setTaskPanelOpen] = useState(false);
 
   const rootFeature = useGameMapStore((s) => s.rootFeature);
   const setRootFeature = useGameMapStore((s) => s.setRootFeature);
@@ -494,6 +501,10 @@ export function Home() {
   const checkConnection = useRobloxStore((s) => s.checkConnection);
   const { sendMessage } = useChat();
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Granular task subscription so the header badge updates live.
+  const activeTaskCount = useTaskStore(
+    (s) => s.tasks.filter((t) => t.status === "running" || t.status === "pending" || t.status === "paused").length
+  );
 
   // Keyboard shortcuts
   useAppShortcuts({
@@ -519,6 +530,7 @@ export function Home() {
   useEffect(() => {
     useChatStore.getState().hydrateFromServer().catch(() => {});
     useMemoryStore.getState().hydrate().catch(() => {});
+    useTaskStore.getState().hydrate().catch(() => {});
   }, []);
 
   // URL routing: /chat/:id selects a conversation, "/" or unknown opens the
@@ -751,6 +763,46 @@ export function Home() {
     const intent = detectIntent(userMessage);
     setLastIntent(intent.type);
 
+    // ---- Task control shortcuts -------------------------------------------
+    // Recognize explicit stop / cancel / pause / continue / resume / run so
+    // the user can drive the queue without opening the TaskPanel.
+    const trimmed = userMessage.trim().toLowerCase();
+    const isCancelWord = /^(stop|cancel|abort|halt|pause|quit|that['’]?s enough|stop doing that)$/i.test(userMessage.trim());
+    const isContinueWord = /^(continue|resume|restart|run|go|go ahead|start|execute|proceed|proceed with the (plan|task)|run the (plan|task))$/i.test(userMessage.trim());
+    const ts = useTaskStore.getState();
+
+    if (isCancelWord) {
+      const running = ts.currentTask();
+      const current = running || ts.tasks.find((t) => t.status === "needs_resume");
+      if (current) {
+        ts.cancel(current.id);
+        addMessage({ role: "user", content: userMessage });
+        addMessage({ role: "assistant", content: `Cancelled the task **${current.title || "untitled"}**. Nothing else is running.` });
+      } else if (ts.tasks.some((t) => t.status === "pending" || t.status === "paused")) {
+        // Cancel everything still queued.
+        const queued = ts.tasks.filter((t) => t.status === "pending" || t.status === "paused");
+        await Promise.all(queued.map((t) => ts.cancel(t.id)));
+        addMessage({ role: "user", content: userMessage });
+        addMessage({ role: "assistant", content: "Cancelled the queued tasks. The queue is now empty." });
+      } else {
+        addMessage({ role: "user", content: userMessage });
+        addMessage({ role: "assistant", content: "There are no running or queued tasks to stop." });
+      }
+      return;
+    }
+
+    if (isContinueWord) {
+      const paused = ts.tasks.find((t) => t.status === "pending");
+      const needsResume = ts.tasks.find((t) => t.status === "needs_resume");
+      const target = paused || needsResume;
+      if (target) {
+        ts.setStatus(target.id, "running"); // promote pending/paused/needs_resume -> running
+        addMessage({ role: "user", content: userMessage });
+        addMessage({ role: "assistant", content: `Starting **${target.title || "the task"}**. I'll run it now.` });
+        return;
+      }
+    }
+
     console.log("[Home] Submitting message:", userMessage, "with context:", chipContext, "intent:", intent.type);
 
     // Add user message (show without context prefix for cleaner UI, but store chips)
@@ -759,16 +811,50 @@ export function Home() {
     // Add placeholder for assistant
     const assistantId = addMessage({ role: "assistant", content: "" });
 
-    setStreaming(true);
-    setError(null);
-
     // Capture session ID so async work (title, memory) targets the right convo.
     const sessionId = useChatStore.getState().currentSessionId;
+
+    // ---- Task / queue integration ----------------------------------------
+    const taskSettings = useTaskStore.getState().settings;
+    const isBusyNow = useTaskStore.getState().isBusy();
+    const classification = classifyComplexity(userMessage);
+    const resolved = resolveMode(classification, taskSettings.mode);
+    const isStatusQuestion = classification.complexity === "trivial";
+
+    // Title for the task: a short, user-friendly label.
+    const taskTitle = userMessage.length > 80 ? userMessage.slice(0, 77) + "…" : userMessage;
+
+    let taskId: string | null = null;
+    const projectId = getStudioSiteId() || "default";
+
+    if (resolved.shouldCreateTask) {
+      // Decide initial status:
+      //   - Already busy while autoQueue off: pending (queued)
+      //   - Otherwise: running (start now). Plan mode also starts now; the AI
+      //     first presents a plan via update_task_plan, then executes.
+      const isBusyNow = useTaskStore.getState().isBusy();
+      const initialStatus: "pending" | "running" = isBusyNow ? "pending" : "running";
+      const t = await useTaskStore.getState().enqueue({
+        id: crypto.randomUUID(),
+        projectId,
+        conversationId: sessionId || "default",
+        title: taskTitle,
+        prompt: userMessage,
+        status: initialStatus,
+        priority: "normal",
+        mode: resolved.mode,
+        effort: resolved.effort,
+        createdAt: Date.now(),
+      });
+      if (t) taskId = t.id; // plan mode -> pending (status), but AI runs below
+    }
+
+    setStreaming(true);
+    setError(null);
 
     try {
       // Pull a small, relevant slice of memory for this turn. Never blocks
       // the response — a stale or empty list just means we send less.
-      const projectId = getStudioSiteId() || "default";
       const memoryLines = useMemoryStore.getState().toPromptLines(
         useMemoryStore.getState().relevantFor(userMessage, 6).filter(
           (m) => m.scope === "global" || m.projectId === projectId
@@ -777,6 +863,14 @@ export function Home() {
       const systemExtension = memoryLines
         ? `Relevant memory (use only if it improves your answer; do not mention unless asked):\n${memoryLines}`
         : undefined;
+
+      // Map the user's effort setting to actual provider parameters.
+      const settings = useSettingsStore.getState();
+      const providerOptions = buildProviderOptions(
+        settings.selectedProvider,
+        settings.selectedModel,
+        taskSettings.effort
+      );
 
       const chatMessages = [
         ...messages
@@ -799,6 +893,7 @@ export function Home() {
 
       await sendMessage(chatMessages, {
         systemExtension,
+        providerOptions: Object.keys(providerOptions).length > 0 ? providerOptions : undefined,
         onToken: (token) => {
           fullText += token;
           if (rafId === null) {
@@ -842,10 +937,133 @@ export function Home() {
               });
             }
           }
+
+          // Handle update_task_plan: replace / add / advance / skip steps
+          if (taskId && toolResult.output && typeof toolResult.output === "object") {
+            const plan = toolResult.output as {
+              action?: string;
+              steps?: Array<{ id: string; title: string; dependsOn?: string[] }>;
+              currentStep?: string;
+              note?: string;
+            };
+            if (
+              plan.action &&
+              (plan.action === "replace" ||
+                plan.action === "add" ||
+                plan.action === "advance" ||
+                plan.action === "skip")
+            ) {
+              const ts = useTaskStore.getState();
+              const task = ts.tasks.find((t) => t.id === taskId);
+              if (task) {
+                if (plan.action === "replace" && Array.isArray(plan.steps)) {
+                  const newSteps: TaskStep[] = plan.steps.map((s, i) => ({
+                    id: s.id,
+                    title: s.title,
+                    order: i,
+                    status: "pending",
+                    dependsOn: s.dependsOn || [],
+                  }));
+                  if (newSteps.length > 0) {
+                    newSteps[0] = { ...newSteps[0], status: "in_progress", startedAt: Date.now() };
+                  }
+                  void ts.patch(taskId, {
+                    steps: newSteps,
+                    currentStep: newSteps[0]?.id || "",
+                    progress: newSteps.length > 0 ? 0.05 : 0,
+                  });
+                } else if (plan.action === "add" && Array.isArray(plan.steps)) {
+                  const startOrder = task.steps.length;
+                  const additions: TaskStep[] = plan.steps.map((s, i) => ({
+                    id: s.id,
+                    title: s.title,
+                    order: startOrder + i,
+                    status: "pending",
+                    dependsOn: s.dependsOn || [],
+                  }));
+                  void ts.patch(taskId, { steps: [...task.steps, ...additions] });
+                } else if (plan.action === "advance" && plan.currentStep) {
+                  const sid = plan.currentStep;
+                  const steps: TaskStep[] = task.steps.map((s) =>
+                    s.id === sid
+                      ? { ...s, status: "completed", completedAt: Date.now() }
+                      : s
+                  );
+                  const completedIds = new Set(
+                    steps.filter((s) => s.status === "completed").map((s) => s.id)
+                  );
+                  const next = steps.find(
+                    (s) =>
+                      s.status === "pending" &&
+                      s.dependsOn.every((d) => completedIds.has(d))
+                  );
+                  if (next) {
+                    steps[steps.indexOf(next)] = {
+                      ...next,
+                      status: "in_progress",
+                      startedAt: Date.now(),
+                    };
+                    void ts.patch(taskId, { steps, currentStep: next.id });
+                  } else {
+                    void ts.patch(taskId, { steps, currentStep: "" });
+                  }
+                } else if (plan.action === "skip" && plan.currentStep) {
+                  const sid = plan.currentStep;
+                  const steps: TaskStep[] = task.steps.map((s) =>
+                    s.id === sid
+                      ? { ...s, status: "skipped", completedAt: Date.now() }
+                      : s
+                  );
+                  void ts.patch(taskId, { steps });
+                }
+              }
+            }
+          }
         },
         onFinish: () => {
           console.log("[Home] Stream finished, total length:", fullText.length);
           setStreaming(false);
+
+          // Mark the task complete (or fail if no meaningful content).
+          if (taskId) {
+            const ts = useTaskStore.getState();
+            const task = ts.tasks.find((t) => t.id === taskId);
+            if (task && task.status === "running") {
+              // Mark any in_progress step as completed.
+              const steps = task.steps.map((s) =>
+                s.status === "in_progress"
+                  ? { ...s, status: "completed" as const, completedAt: Date.now() }
+                  : s
+              );
+              ts.patch(taskId, {
+                status: fullText.trim().length === 0 ? "failed" : "completed",
+                progress: 1,
+                completedAt: Date.now(),
+                steps,
+                result: {
+                  summary: fullText.slice(0, 280),
+                  filesChanged: [],
+                  toolsUsed: Array.from(
+                    new Set(
+                      useChatStore
+                        .getState()
+                        .sessions.find((s) => s.id === sessionId)
+                        ?.messages.flatMap((m) => m.toolCalls?.map((tc) => tc.name) || []) || []
+                    )
+                  ),
+                  verification: "Completed in single streaming pass",
+                  duration: Date.now() - (task.startedAt || task.createdAt),
+                },
+              });
+            }
+          }
+
+          // If auto-queue and we just finished a task, start the next pending one.
+          // We don't actually start another agent run from here — the next user
+          // message or a manual "Run now" will pick it up. We just surface it as
+          // ready. (Auto-queueing internal continuations is intentionally out of
+          // scope to avoid runaway agent loops.)
+
           // Async title generation: only for the very first user message of
           // a session, and only if the current title is the placeholder.
           if (sessionId) {
@@ -859,7 +1077,6 @@ export function Home() {
                 .catch(() => {});
             }
             // Async memory extraction. Never blocks; never throws.
-            const projectId = getStudioSiteId() || "default";
             extractMemories({ userMessage, assistantMessage: fullText })
               .then((mems) => {
                 if (!mems) return;
@@ -884,6 +1101,14 @@ export function Home() {
           console.error("[Home] Stream error:", error);
           setError(error.message);
           setStreaming(false);
+          // Mark the task as failed (with retry available).
+          if (taskId) {
+            useTaskStore.getState().patch(taskId, {
+              status: "failed",
+              completedAt: Date.now(),
+              error: error.message,
+            });
+          }
         },
       });
     } catch (error) {
@@ -893,6 +1118,224 @@ export function Home() {
       setStreaming(false);
     }
   }, [input, isStreaming, messages, activeChips, addMessage, updateMessage, addToolCall, updateToolCall, setStreaming, setError, sendMessage, hasCredits, deductCredit]);
+
+  /**
+   * runTaskPrompt — execute a prompt for a specific task, streaming the reply
+   * into the current chat session and updating the task's status/progress as it
+   * goes. Used to auto-advance the queue when the active task finishes, and by
+   * the "Run now" / "continue" flows. Mirrors the streaming path in
+   * handleSubmit so queued tasks behave identically to interactive ones.
+   */
+  const advanceQueueRef = useRef<() => void>(() => {});
+  const runTaskPromptRef = useRef<(prompt: string, id: string, opts?: { silentUserMessage?: boolean }) => void>(() => {});
+
+  const advanceQueue = useCallback(async () => {
+    const ts = useTaskStore.getState();
+    const next = ts.queue()[0] || ts.tasks.find((t) => t.status === "needs_resume");
+    if (!next) return;
+    if (ts.isBusy()) return; // something already running
+    await runTaskPromptRef.current(next.prompt || next.title, next.id);
+  }, []);
+
+  advanceQueueRef.current = advanceQueue;
+
+  const runTaskPrompt = useCallback(
+    async (
+      taskPrompt: string,
+      taskId: string,
+      opts?: { silentUserMessage?: boolean }
+    ) => {
+      const ts = useTaskStore.getState();
+      const sessionId = useChatStore.getState().currentSessionId;
+      const projectId = getStudioSiteId() || "default";
+      const taskSettings = useTaskStore.getState().settings;
+
+      // Mark running (in case it was pending/needs_resume).
+      ts.setStatus(taskId, "running").catch(() => {});
+
+      // Reflect the task prompt into the chat (unless caller suppressed it).
+      if (!opts?.silentUserMessage) {
+        addMessage({ role: "user", content: taskPrompt });
+      }
+      const assistantId = addMessage({ role: "assistant", content: "" });
+
+      setStreaming(true);
+      setError(null);
+
+      let fullText = "";
+      let rafId: number | null = null;
+      const flushToken = () => {
+        rafId = null;
+        updateMessage(assistantId, fullText);
+      };
+
+      const sessionMessages = useChatStore.getState().sessions.find((s) => s.id === sessionId)?.messages || [];
+      const memoryLines = useMemoryStore.getState().toPromptLines(
+        useMemoryStore.getState()
+          .relevantFor(taskPrompt, 6)
+          .filter((m) => m.scope === "global" || m.projectId === projectId)
+      );
+      const systemExtension = memoryLines
+        ? `Relevant memory (use only if it improves your answer; do not mention unless asked):\n${memoryLines}`
+        : undefined;
+      const settings = useSettingsStore.getState();
+      const providerOptions = buildProviderOptions(
+        settings.selectedProvider,
+        settings.selectedModel,
+        taskSettings.effort
+      );
+
+      const chatMessages = [
+        ...sessionMessages
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+        { role: "user" as const, content: taskPrompt },
+      ];
+
+      try {
+        await sendMessage(chatMessages, {
+          systemExtension,
+          providerOptions: Object.keys(providerOptions).length > 0 ? providerOptions : undefined,
+          onToken: (token) => {
+            fullText += token;
+            if (rafId === null) rafId = requestAnimationFrame(flushToken);
+          },
+          onToolCall: (toolCall) => {
+            addToolCall(assistantId, { id: toolCall.id, name: toolCall.name, args: toolCall.input });
+            updateToolCall(assistantId, toolCall.id, { status: "running" });
+          },
+          onToolResult: (toolResult) => {
+            updateToolCall(assistantId, toolResult.id, {
+              status: "complete",
+              result: toolResult.output,
+            });
+
+            // update_task_plan: reflect step changes into the task.
+            if (toolResult.output && typeof toolResult.output === "object") {
+              const plan = toolResult.output as {
+                action?: string;
+                steps?: Array<{ id: string; title: string; dependsOn?: string[] }>;
+                currentStep?: string;
+              };
+              if (
+                plan.action &&
+                (plan.action === "replace" ||
+                  plan.action === "add" ||
+                  plan.action === "advance" ||
+                  plan.action === "skip")
+              ) {
+                const t = useTaskStore.getState().tasks.find((x) => x.id === taskId);
+                if (t) {
+                  const cur = useTaskStore.getState();
+                  if (plan.action === "replace" && Array.isArray(plan.steps)) {
+                    const newSteps: TaskStep[] = plan.steps.map((s, i) => ({
+                      id: s.id,
+                      title: s.title,
+                      order: i,
+                      status: "pending",
+                      dependsOn: s.dependsOn || [],
+                    }));
+                    if (newSteps.length > 0) {
+                      newSteps[0] = { ...newSteps[0], status: "in_progress", startedAt: Date.now() };
+                    }
+                    void cur.patch(taskId, {
+                      steps: newSteps,
+                      currentStep: newSteps[0]?.id || "",
+                      progress: newSteps.length > 0 ? 0.05 : 0,
+                    });
+                  } else if (plan.action === "add" && Array.isArray(plan.steps)) {
+                    const additions: TaskStep[] = plan.steps.map((s, i) => ({
+                      id: s.id,
+                      title: s.title,
+                      order: t.steps.length + i,
+                      status: "pending",
+                      dependsOn: s.dependsOn || [],
+                    }));
+                    void cur.patch(taskId, { steps: [...t.steps, ...additions] });
+                  } else if (plan.action === "advance" && plan.currentStep) {
+                    const steps: TaskStep[] = t.steps.map((s) =>
+                      s.id === plan.currentStep
+                        ? { ...s, status: "completed", completedAt: Date.now() }
+                        : s
+                    );
+                    const completedIds = new Set(
+                      steps.filter((s) => s.status === "completed").map((s) => s.id)
+                    );
+                    const next = steps.find(
+                      (s) => s.status === "pending" && s.dependsOn.every((d) => completedIds.has(d))
+                    );
+                    if (next) {
+                      steps[steps.indexOf(next)] = {
+                        ...next,
+                        status: "in_progress",
+                        startedAt: Date.now(),
+                      };
+                      void cur.patch(taskId, { steps, currentStep: next.id });
+                    } else {
+                      void cur.patch(taskId, { steps, currentStep: "" });
+                    }
+                  } else if (plan.action === "skip" && plan.currentStep) {
+                    const steps: TaskStep[] = t.steps.map((s) =>
+                      s.id === plan.currentStep
+                        ? { ...s, status: "skipped", completedAt: Date.now() }
+                        : s
+                    );
+                    void cur.patch(taskId, { steps });
+                  }
+                }
+              }
+            }
+          },
+          onFinish: () => {
+            updateMessage(assistantId, fullText);
+            setStreaming(false);
+            const t = useTaskStore.getState().tasks.find((x) => x.id === taskId);
+            if (t && t.status === "running") {
+              const steps = t.steps.map((s) =>
+                s.status === "in_progress"
+                  ? { ...s, status: "completed" as const, completedAt: Date.now() }
+                  : s
+              );
+              void useTaskStore.getState().patch(taskId, {
+                status: fullText.trim().length === 0 ? "failed" : "completed",
+                progress: 1,
+                completedAt: Date.now(),
+                steps,
+                result: {
+                  summary: fullText.slice(0, 280),
+                  filesChanged: [],
+                  toolsUsed: [],
+                  verification: "Auto-executed queued task via streaming",
+                  duration: Date.now() - (t.startedAt || t.createdAt),
+                },
+              });
+            }
+            // Auto-advance to the next queued task (sequential execution).
+            void advanceQueueRef.current();
+          },
+          onError: (error) => {
+            console.error("[Home] Task run error:", error);
+            setError(error.message);
+            setStreaming(false);
+            void useTaskStore.getState().patch(taskId, {
+              status: "failed",
+              completedAt: Date.now(),
+              error: error.message,
+            });
+          },
+        });
+      } catch (error) {
+        console.error("[Home] Task chat error:", error);
+        setError(error instanceof Error ? error.message : String(error));
+        setStreaming(false);
+      }
+    },
+    [addMessage, updateMessage, addToolCall, updateToolCall, setStreaming, setError, sendMessage]
+  );
+
+  runTaskPromptRef.current = runTaskPrompt;
+
+
 
   const handleSuggestionClick = (suggestion: string) => {
     setInput(suggestion);
@@ -1285,6 +1728,7 @@ export function Home() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
+                    <ExecutionModeSelector />
                     <ModelSelector disabled={!hasConfiguredProvider} />
 
                     {/* Improve Prompt Button */}
@@ -1541,6 +1985,21 @@ export function Home() {
           )}
 
           <div className="h-4 w-px bg-border mx-1" />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 relative"
+            onClick={() => setTaskPanelOpen((v) => !v)}
+            title="Tasks"
+            aria-label="Open task panel"
+          >
+            <ListChecks className="w-4 h-4" />
+            {activeTaskCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 text-[9px] bg-primary text-primary-foreground rounded-full min-w-[14px] h-[14px] px-1 flex items-center justify-center">
+                {activeTaskCount > 99 ? "99+" : activeTaskCount}
+              </span>
+            )}
+          </Button>
           <ChatActions
             onClear={clearMessages}
             disabled={messages.length === 0 || isStreaming}
@@ -1781,6 +2240,7 @@ export function Home() {
                 />
               </div>
               <div className="flex items-center gap-2">
+                <ExecutionModeSelector />
                 <ModelSelector />
                 {/* Toolbox Button */}
                 <PromptInputAction tooltip="Open Toolbox (search Creator Store)">
@@ -1923,6 +2383,7 @@ export function Home() {
       )}
 
       <MemoryDialog open={memoryOpen} onOpenChange={setMemoryOpen} />
+      <TaskPanel open={taskPanelOpen} onClose={() => setTaskPanelOpen(false)} />
     </div>
   );
 }

@@ -414,7 +414,7 @@ end
 -- loop), then commit the change synchronously with the non-yielding
 -- instance.Source assignment so the command always responds.
 local function updateScriptSource(instance, newSource)
-	if ScriptEditorService and ScriptEditorService:UpdateSourceAsync then
+	if ScriptEditorService and ScriptEditorService.UpdateSourceAsync then
 		task.spawn(function()
 			pcall(function()
 				ScriptEditorService:UpdateSourceAsync(instance, function() return newSource end)

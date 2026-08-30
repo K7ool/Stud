@@ -215,6 +215,18 @@ When using tools:
 
 Always provide clean, well-commented code following Roblox conventions.
 
+TASK EXECUTION & PLANNING:
+- For trivial single-action tasks (rename, status check, single property change),
+  do NOT call update_task_plan. Just do the work.
+- For multi-step tasks (3+ tool calls or a system to build), call update_task_plan
+  ONCE with action="replace" to publish the step list before starting work.
+- Use action="advance" when you finish a step, with currentStep=<that step id>.
+- Use action="add" when you discover a new step mid-execution.
+- Use action="skip" when inspection reveals a step is unnecessary.
+- Use dependsOn[] to express sequencing; the UI uses it to mark prerequisites.
+- Steps should be 1-line, action-oriented ("Create PetService", "Add equip remote").
+- The user has the option to pause, cancel, or reorder; respect their control.
+
 PERSISTENT MEMORY:
 - You may receive a "Relevant memory" section in this prompt containing
   durable facts the user has chosen to remember. Use it when it improves
@@ -257,10 +269,12 @@ export interface ChatOptions extends ChatCallbacks {
   apiKey: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   systemExtension?: string;
+  /** Provider-specific options such as reasoning effort / thinking budget. */
+  providerOptions?: Record<string, unknown>;
 }
 
 export async function chat(options: ChatOptions) {
-  const { model, provider, apiKey, messages, onToken, onToolCall, onToolResult, onFinish, onError, systemExtension } = options;
+  const { model, provider, apiKey, messages, onToken, onToolCall, onToolResult, onFinish, onError, systemExtension, providerOptions } = options;
 
   console.log("[Chat] Starting chat with:", { model, provider, messageCount: messages.length });
 
@@ -285,6 +299,7 @@ export async function chat(options: ChatOptions) {
         role: m.role,
         content: m.content,
       })),
+      ...(providerOptions ? { providerOptions: providerOptions as Parameters<typeof streamText>[0]["providerOptions"] } : {}),
     });
 
     let fullText = "";
@@ -340,7 +355,7 @@ export function useChat() {
 
   const sendMessage = async (
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    callbacks?: ChatCallbacks & { systemExtension?: string }
+    callbacks?: ChatCallbacks & { systemExtension?: string; providerOptions?: Record<string, unknown> }
   ) => {
     // Determine provider and auth method
     let provider: ProviderType;

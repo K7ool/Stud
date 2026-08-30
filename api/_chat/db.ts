@@ -71,11 +71,14 @@ const k = {
   msgs: (uid: string, cid: string) => `chat:msgs:${uid}:${cid}`,
   memoryList: (uid: string) => `chat:memlist:${uid}`,
   memory: (uid: string, id: string) => `chat:mem:${uid}:${id}`,
+  taskList: (uid: string) => `chat:tasklist:${uid}`,
+  task: (uid: string, id: string) => `chat:task:${uid}:${id}`,
 };
 
 const CONV_TTL = 60 * 60 * 24 * 30;
 const MSG_TTL = 60 * 60 * 24 * 30;
 const MEM_TTL = 60 * 60 * 24 * 90;
+const TASK_TTL = 60 * 60 * 24 * 14;
 
 // ----- conversations -------------------------------------------------------
 
@@ -231,6 +234,196 @@ export async function deleteMemory(userId: string, id: string): Promise<void> {
   await cacheDel(k.memory(userId, id));
   const list = (await cacheGet<string[]>(k.memoryList(userId))) || [];
   await cacheSet(k.memoryList(userId), list.filter((x) => x !== id), MEM_TTL);
+}
+
+// ----- tasks / queue ------------------------------------------------------
+
+export type TaskStatus =
+  | "pending"      // queued, not yet started
+  | "running"      // actively executing
+  | "paused"       // user paused; safe to resume
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "needs_resume";// was running when the page closed / connection dropped
+
+export type TaskPriority = "high" | "normal" | "low";
+export type TaskMode = "instant" | "auto" | "plan";
+export type TaskEffort = "low" | "medium" | "high";
+export type StepStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "skipped";
+
+export interface TaskStep {
+  id: string;
+  title: string;
+  status: StepStatus;
+  order: number;
+  dependsOn: string[]; // step ids
+  startedAt?: number;
+  completedAt?: number;
+  error?: string;
+  result?: string; // short summary, e.g. "Created PetService ModuleScript"
+}
+
+export interface Task {
+  id: string;
+  userId: string;
+  projectId: string;
+  conversationId: string;
+  title: string;
+  prompt: string; // original user message
+  status: TaskStatus;
+  priority: TaskPriority;
+  mode: TaskMode;
+  effort: TaskEffort;
+  // queue ordering: the position within the user-scoped queue
+  queuePosition: number;
+  // progress
+  progress: number; // 0..1
+  currentStep: string; // step id currently active, or ""
+  steps: TaskStep[];
+  // timestamps
+  createdAt: number;
+  updatedAt: number;
+  startedAt?: number;
+  completedAt?: number;
+  // results
+  result?: {
+    summary: string;
+    filesChanged: string[];
+    toolsUsed: string[];
+    verification: string;
+    duration: number;
+  };
+  error?: string;
+  retryCount: number;
+}
+
+export async function listTasks(userId: string): Promise<Task[]> {
+  const ids = (await cacheGet<string[]>(k.taskList(userId))) || [];
+  const out: Task[] = [];
+  for (const id of ids) {
+    const t = await cacheGet<Task>(k.task(userId, id));
+    if (t) out.push(t);
+  }
+  return out.sort((a, b) => a.queuePosition - b.queuePosition);
+}
+
+export async function getTask(userId: string, id: string): Promise<Task | null> {
+  return cacheGet<Task>(k.task(userId, id));
+}
+
+async function saveTask(task: Task): Promise<void> {
+  task.updatedAt = now();
+  await cacheSet(k.task(task.userId, task.id), task, TASK_TTL);
+  const ids = (await cacheGet<string[]>(k.taskList(task.userId))) || [];
+  if (!ids.includes(task.id)) {
+    // Insert sorted by queuePosition (smaller first).
+    const next = [...ids, task.id];
+    next.sort((a, b) => 0); // we re-sort by reloading below
+    await cacheSet(k.taskList(task.userId), next.slice(-500), TASK_TTL);
+  }
+}
+
+async function removeTaskFromIndex(userId: string, id: string): Promise<void> {
+  const ids = (await cacheGet<string[]>(k.taskList(userId))) || [];
+  const next = ids.filter((x) => x !== id);
+  await cacheSet(k.taskList(userId), next, TASK_TTL);
+}
+
+export async function createTask(
+  userId: string,
+  partial: Omit<
+    Task,
+    "updatedAt" | "queuePosition" | "progress" | "currentStep" | "steps" | "retryCount"
+  > & {
+    steps?: TaskStep[];
+  },
+): Promise<Task> {
+  const existing = (await cacheGet<string[]>(k.taskList(userId))) || [];
+  const maxPos = await listTasks(userId).then((all) =>
+    all.length ? Math.max(...all.map((t) => t.queuePosition)) : 0
+  );
+  const task: Task = {
+    id: partial.id,
+    userId,
+    projectId: partial.projectId,
+    conversationId: partial.conversationId,
+    title: partial.title,
+    prompt: partial.prompt,
+    status: partial.status,
+    priority: partial.priority,
+    mode: partial.mode,
+    effort: partial.effort,
+    queuePosition: partial.priority === "high" ? maxPos + 0.5 : maxPos + 1,
+    progress: 0,
+    currentStep: "",
+    steps: partial.steps || [],
+    createdAt: partial.createdAt,
+    updatedAt: now(),
+    startedAt: partial.startedAt,
+    completedAt: partial.completedAt,
+    result: partial.result,
+    error: partial.error,
+    retryCount: 0,
+  };
+  await saveTask(task);
+  if (!existing.includes(task.id)) {
+    const next = [...existing, task.id];
+    await cacheSet(k.taskList(userId), next.slice(-500), TASK_TTL);
+  }
+  return task;
+}
+
+export async function patchTask(
+  userId: string,
+  id: string,
+  patch: Partial<Task>,
+): Promise<Task | null> {
+  const cur = await getTask(userId, id);
+  if (!cur) return null;
+  const next: Task = { ...cur, ...patch, updatedAt: now() };
+  await saveTask(next);
+  return next;
+}
+
+export async function deleteTask(userId: string, id: string): Promise<void> {
+  await cacheDel(k.task(userId, id));
+  await removeTaskFromIndex(userId, id);
+}
+
+/** Re-number the queue so positions are dense 1..N based on priority + creation. */
+export async function reorderQueue(userId: string): Promise<Task[]> {
+  const tasks = await listTasks(userId);
+  tasks.sort((a, b) => {
+    const order: Record<TaskPriority, number> = { high: 0, normal: 1, low: 2 };
+    const pa = order[a.priority];
+    const pb = order[b.priority];
+    if (pa !== pb) return pa - pb;
+    return a.createdAt - b.createdAt;
+  });
+  for (let i = 0; i < tasks.length; i++) {
+    if (tasks[i].queuePosition !== i + 1) {
+      tasks[i] = { ...tasks[i], queuePosition: i + 1, updatedAt: now() };
+      await cacheSet(k.task(userId, tasks[i].id), tasks[i], TASK_TTL);
+    }
+  }
+  return tasks;
+}
+
+export async function getRunningAndQueued(userId: string): Promise<Task[]> {
+  const all = await listTasks(userId);
+  return all.filter(
+    (t) =>
+      t.status === "pending" ||
+      t.status === "running" ||
+      t.status === "paused" ||
+      t.status === "needs_resume"
+  );
 }
 
 // ----- userId helpers -----------------------------------------------------

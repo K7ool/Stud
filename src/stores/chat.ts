@@ -37,6 +37,31 @@ export interface ToolCall {
   result?: unknown;
   status: "pending" | "running" | "complete" | "error" | "waiting";
   error?: string;
+  duration?: number; // duration in ms
+  requestId?: string;
+}
+
+export interface ExecutionIssue {
+  stepId?: string;
+  message: string;
+  reason?: string;
+  retryable?: boolean;
+  target?: string;
+}
+
+export interface ExecutionResult {
+  taskId?: string;
+  status: "completed" | "partial" | "failed" | "blocked" | "cancelled" | "in_progress";
+  title: string;
+  summary: string;
+  progress?: {
+    completed: number;
+    total: number;
+  };
+  changes?: string[];
+  verification?: string[];
+  issues?: ExecutionIssue[];
+  nextAction?: string;
 }
 
 export interface Attachment {
@@ -52,6 +77,7 @@ export interface Message {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
   toolCalls?: ToolCall[];
+  executionResult?: ExecutionResult;
   contextChips?: string[];
   attachments?: Attachment[];
   createdAt: Date;

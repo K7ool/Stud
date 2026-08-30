@@ -314,3 +314,138 @@ export function memoryToPromptLines(memories: Memory[]): string {
     })
     .join("\n");
 }
+
+// ----- task API ------------------------------------------------------------
+
+export type TaskStatus =
+  | "pending"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "needs_resume";
+
+export type TaskPriority = "high" | "normal" | "low";
+export type TaskMode = "instant" | "auto" | "plan";
+export type TaskEffort = "low" | "medium" | "high";
+export type StepStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "skipped";
+
+export interface TaskStep {
+  id: string;
+  title: string;
+  status: StepStatus;
+  order: number;
+  dependsOn: string[];
+  startedAt?: number;
+  completedAt?: number;
+  error?: string;
+  result?: string;
+}
+
+export interface Task {
+  id: string;
+  userId: string;
+  projectId: string;
+  conversationId: string;
+  title: string;
+  prompt: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  mode: TaskMode;
+  effort: TaskEffort;
+  queuePosition: number;
+  progress: number;
+  currentStep: string;
+  steps: TaskStep[];
+  createdAt: number;
+  updatedAt: number;
+  startedAt?: number;
+  completedAt?: number;
+  result?: {
+    summary: string;
+    filesChanged: string[];
+    toolsUsed: string[];
+    verification: string;
+    duration: number;
+  };
+  error?: string;
+  retryCount: number;
+}
+
+export async function apiListTasks(): Promise<Task[]> {
+  const r = await fetch(`${API}/tasks`, { headers: headers() });
+  if (!r.ok) return [];
+  const j = (await r.json()) as { tasks?: Task[] };
+  return j.tasks || [];
+}
+
+export async function apiListActiveTasks(): Promise<Task[]> {
+  const r = await fetch(`${API}/tasks/active`, { headers: headers() });
+  if (!r.ok) return [];
+  const j = (await r.json()) as { tasks?: Task[] };
+  return j.tasks || [];
+}
+
+export async function apiCreateTask(
+  t: Omit<Task, "userId" | "queuePosition" | "progress" | "currentStep" | "steps" | "retryCount" | "updatedAt"> & { steps?: TaskStep[] }
+): Promise<Task | null> {
+  const r = await fetch(`${API}/tasks`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify(t),
+  });
+  if (!r.ok) return null;
+  const j = (await r.json()) as { task?: Task };
+  return j.task || null;
+}
+
+export async function apiGetTask(id: string): Promise<Task | null> {
+  const r = await fetch(`${API}/tasks/${id}`, { headers: headers() });
+  if (!r.ok) return null;
+  const j = (await r.json()) as { task?: Task };
+  return j.task || null;
+}
+
+export async function apiPatchTask(id: string, patch: Partial<Task>): Promise<Task | null> {
+  const r = await fetch(`${API}/tasks/${id}`, {
+    method: "PATCH",
+    headers: headers(),
+    body: JSON.stringify(patch),
+  });
+  if (!r.ok) return null;
+  const j = (await r.json()) as { task?: Task };
+  return j.task || null;
+}
+
+export async function apiDeleteTask(id: string): Promise<boolean> {
+  const r = await fetch(`${API}/tasks/${id}`, { method: "DELETE", headers: headers() });
+  return r.ok;
+}
+
+export async function apiTaskAction(
+  id: string,
+  action: "start" | "pause" | "cancel" | "retry" | "complete" | "fail" | "needs_resume",
+  reason?: string,
+): Promise<Task | null> {
+  const r = await fetch(`${API}/tasks/${id}/${action}`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ reason }),
+  });
+  if (!r.ok) return null;
+  const j = (await r.json()) as { task?: Task };
+  return j.task || null;
+}
+
+export async function apiReorderQueue(): Promise<Task[]> {
+  const r = await fetch(`${API}/tasks/reorder`, { method: "POST", headers: headers() });
+  if (!r.ok) return [];
+  const j = (await r.json()) as { tasks?: Task[] };
+  return j.tasks || [];
+}

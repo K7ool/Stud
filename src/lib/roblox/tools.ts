@@ -1586,6 +1586,41 @@ The suggestions are context-aware based on the current project.`,
 })
 
 // ============================================================================
+// Task plan tool — used by the AI to publish/update its own step list
+// ============================================================================
+
+export const updateTaskPlan = tool({
+  description: `Update the visible task plan. Use this when working on a non-trivial task.
+
+ACTIONS:
+- "replace": set the entire plan (provide steps[]).
+- "advance": mark a step as completed and start the next.
+- "add": append a new step to the existing plan.
+- "skip": mark a step as skipped (e.g. no longer needed after inspection).
+
+Steps should be concrete, scoped, and ordered. Each step becomes a TODO row.
+Do NOT create plans for trivial/single-step tasks.`,
+  inputSchema: z.object({
+    action: z.enum(["replace", "advance", "add", "skip"]),
+    currentStep: z.string().optional().describe("Step id to advance/skip (for advance/skip actions)."),
+    steps: z
+      .array(
+        z.object({
+          id: z.string(),
+          title: z.string(),
+          dependsOn: z.array(z.string()).optional().default([]),
+        })
+      )
+      .optional()
+      .describe("Step definitions for replace/add."),
+    note: z.string().optional().describe("Short status note shown in the panel."),
+  }),
+  execute: async (input: { action: "replace" | "advance" | "add" | "skip"; currentStep?: string; steps?: Array<{ id: string; title: string; dependsOn?: string[] }>; note?: string }) => {
+    return { ok: true, ...input };
+  },
+})
+
+// ============================================================================
 // Export all tools
 // ============================================================================
 
@@ -1623,6 +1658,7 @@ export const robloxTools = {
 
   // Agentic tools
   roblox_ask_user: robloxAskUser,
+  update_task_plan: updateTaskPlan,
 
   // File system tools
   file_set_project_path: fileSetProjectPath,
