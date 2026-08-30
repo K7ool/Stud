@@ -17,6 +17,7 @@ import {
   clearPair,
   checkPairStatus,
 } from "@/lib/roblox/client";
+import { useRobloxStore } from "@/stores/roblox";
 import { cn } from "@/lib/utils";
 
 type Status = "idle" | "generating" | "waiting" | "connected" | "error";
@@ -27,6 +28,17 @@ export function StudioPairing({ className }: { className?: string }) {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [project, setProject] = useState<string | null>(null);
+  const setStudioStatus = useRobloxStore((s) => s.setStatus);
+
+  useEffect(() => {
+    if (status === "connected") {
+      setStudioStatus("connected");
+    } else if (status === "waiting") {
+      setStudioStatus("bridge_only");
+    } else if (status === "idle" || status === "error") {
+      setStudioStatus("disconnected");
+    }
+  }, [status, setStudioStatus]);
 
   useEffect(() => {
     const existing = getPairCode();
