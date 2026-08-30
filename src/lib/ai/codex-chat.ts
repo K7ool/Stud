@@ -20,6 +20,29 @@ export interface CodexMessage {
   content: string;
 }
 
+export interface ExecutionIssue {
+  stepId?: string;
+  message: string;
+  reason?: string;
+  retryable?: boolean;
+  target?: string;
+}
+
+export interface ExecutionResult {
+  taskId?: string;
+  status: "completed" | "partial" | "failed" | "blocked" | "cancelled" | "in_progress";
+  title: string;
+  summary: string;
+  progress?: {
+    completed: number;
+    total: number;
+  };
+  changes?: string[];
+  verification?: string[];
+  issues?: ExecutionIssue[];
+  nextAction?: string;
+}
+
 export interface CodexChatCallbacks {
   onToken?: (token: string) => void;
   onToolCall?: (toolCall: { id: string; name: string; input: Record<string, unknown> }) => void;
@@ -27,6 +50,23 @@ export interface CodexChatCallbacks {
   onFinish?: (text: string) => void;
   onError?: (error: Error) => void;
   systemExtension?: string;
+  onExecutionResult?: (result: ExecutionResult) => void;
+}
+
+export interface CodexChat {
+  model: string;
+  provider: string;
+  apiKey: string;
+  messages: CodexMessage[];
+  onToken?: (token: string) => void;
+  onToolCall?: (toolCall: { id: string; name: string; input: Record<string, unknown> }) => void;
+  onToolResult?: (toolResult: { id: string; output: unknown }) => void;
+  onFinish?: (text: string) => void;
+  onError?: (error: Error) => void;
+  systemExtension?: string;
+  providerOptions?: Record<string, unknown>;
+  onSpecialistsDetected?: (specialists: string[]) => void;
+  onExecutionResult?: (result: ExecutionResult) => void;
 }
 
 interface ToolCall {
@@ -274,11 +314,21 @@ async function makeCodexRequest(
  * Stream chat with Codex API - Full agentic loop
  * Continues calling the API until no more tool calls are needed
  */
-export async function codexChat(
-  model: string,
-  messages: CodexMessage[],
-  callbacks?: CodexChatCallbacks
-): Promise<string> {
+export async function codexChat({
+  model,
+  provider,
+  apiKey,
+  messages,
+  onToken,
+  onToolCall,
+  onToolResult,
+  onFinish,
+  onError,
+  systemExtension,
+  providerOptions,
+  onSpecialistsDetected,
+  onExecutionResult,
+}: CodexChat): Promise<string> {
   console.log("[CodexChat] Starting agentic loop with model:", model);
 
   const tools = convertToolsToOpenAI();
@@ -299,7 +349,7 @@ export async function codexChat(
         model,
         conversationHistory,
         tools,
-        callbacks
+        { onToken, onToolCall, onToolResult, onFinish, onError, systemExtension }
       );
 
       fullText += result.text;
@@ -328,10 +378,10 @@ export async function codexChat(
           console.error("[CodexChat] Failed to parse tool arguments:", toolCall.arguments);
         }
 
-        callbacks?.onToolCall?.({ id: toolCall.id, name: toolCall.name, input: args });
+        onToolCall?.({ id: toolCall.id, name: toolCall.name, input: args });
 
         const output = await executeTool(toolCall.name, args);
-        callbacks?.onToolResult?.({ id: toolCall.id, output });
+        onToolResult?.({ id: toolCall.id, output });
 
         // Add the function call output to history
         conversationHistory.push({
@@ -348,12 +398,191 @@ export async function codexChat(
     }
 
     console.log("[CodexChat] Complete, text length:", fullText.length);
-    callbacks?.onFinish?.(fullText);
+    onFinish?.(fullText);
     return fullText;
   } catch (error) {
     console.error("[CodexChat] Error:", error);
     const err = error instanceof Error ? error : new Error(String(error));
-    callbacks?.onError?.(err);
+    onError?.(err);
     throw err;
   }
+}
+
+/**
+ * Create a structured execution result from tool call outputs
+ */
+function createExecutionResult(
+  toolCalls: Array<{ id: string; name: string; args: Record<string, unknown>; result?: unknown; status: "pending" | "running" | "complete" | "error" | "waiting" }>,
+  taskId?: string
+): ExecutionResult {
+  const completedCalls = toolCalls.filter(tc => tc.status === "complete");
+  const failedCalls = toolCalls.filter(tc => tc.status === "error");
+  const inProgressCalls = toolCalls.filter(tc => tc.status === "running" || tc.status === "pending");
+
+  const changes: string[] = [];
+  const verification: string[] = [];
+  const issues: ExecutionIssue[] = [];
+
+  for (const tc of toolCalls) {
+    if (tc.status === "complete") {
+      if (tc.name === "roblox_get_script") {
+        changes.push("Read script content");
+        verification.push("Script read successfully");
+      } else if (tc.name === "roblox_edit_script") {
+        changes.push("Edited script");
+        verification.push("Script edited successfully");
+      } else if (tc.name === "roblox_set_script") {
+        changes.push("Replaced script");
+        verification.push("Script replaced successfully");
+      } else if (tc.name === "roblox_create") {
+        changes.push("Created instance");
+        verification.push("Instance created successfully");
+      } else if (tc.name === "roblox_insert_asset") {
+        const result = tc.result as { success?: boolean; assetName?: string; path?: string };
+        if (result?.success) {
+          changes.push(`Inserted ${result.assetName} at ${result.path}`);
+          verification.push("Asset inserted and verified");
+        }
+      } else {
+        changes.push(`${tc.name} completed`);
+        verification.push("Operation completed");
+      }
+    } else if (tc.status === "error") {
+      issues.push({
+        message: `${tc.name} failed`,
+        reason: tc.error || "Unknown error",
+        retryable: true,
+        target: `Tool call ${tc.id}`
+      });
+      changes.push(`${tc.name} failed`);
+    }
+  }
+
+  let status: ExecutionResult["status"] = "completed";
+  if (failedCalls.length > 0 && completedCalls.length > 0) {
+    status = "partial";
+  } else if (failedCalls.length > 0 && completedCalls.length === 0) {
+    status = "failed";
+  } else if (inProgressCalls.length > 0) {
+    status = "in_progress";
+  }
+
+  return {
+    taskId,
+    status,
+    title: "Tool Operations",
+    summary: `${completedCalls.length} operations completed${failedCalls.length > 0 ? `, ${failedCalls.length} failed` : ""}${inProgressCalls.length > 0 ? `, ${inProgressCalls.length} in progress` : ""}`,
+    progress: {
+      completed: completedCalls.length,
+      total: toolCalls.length
+    },
+    changes: changes.length > 0 ? changes : undefined,
+    verification: verification.length > 0 ? verification : undefined,
+    issues: issues.length > 0 ? issues : undefined,
+    nextAction: inProgressCalls.length > 0 ? "Continue with remaining operations" : 
+                  failedCalls.length > 0 ? "Retry failed operations" : "Task completed"
+  };
+}
+
+/**
+ * Extract execution result from tool call results
+ */
+function extractExecutionResult(
+  toolCalls: Array<{ id: string; name: string; args: Record<string, unknown>; result?: unknown; status: "pending" | "running" | "complete" | "error" | "waiting" }>,
+  taskId?: string,
+  fullText?: string
+): ExecutionResult {
+  const changes: string[] = [];
+  const verification: string[] = [];
+  const issues: ExecutionIssue[] = [];
+
+  // Determine operation type based on tool calls
+  const discoverCalls = toolCalls.filter(tc => tc.name.includes("discover") || tc.name.includes("scan") || tc.name.includes("get"));
+  const actionCalls = toolCalls.filter(tc => tc.name.includes("edit") || tc.name.includes("create") || tc.name.includes("set") || tc.name.includes("insert"));
+  const otherCalls = toolCalls.filter(tc => !discoverCalls.includes(tc) && !actionCalls.includes(tc));
+
+  // Create natural language summary
+  let summary = "";
+  if (discoverCalls.length > 0) {
+    summary += "Explored and discovered components, then ";
+  }
+  if (actionCalls.length > 0) {
+    summary += "executed ${actionCalls.length} actions including ";
+    const actionDescriptions = actionCalls.map(tc => {
+      if (tc.name === "roblox_get_script") return "reading scripts";
+      if (tc.name === "roblox_edit_script") return "editing scripts";
+      if (tc.name === "roblox_set_script") return "updating scripts";
+      if (tc.name === "roblox_create") return "creating instances";
+      if (tc.name === "roblox_insert_asset") return "inserting assets";
+      return tc.name.replace(/^roblox_/, "");
+    });
+    summary += actionDescriptions.slice(0, 3).join(", ") + (actionDescriptions.length > 3 ? ", and more" : "");
+  }
+  if (otherCalls.length > 0) {
+    summary += `, performed ${otherCalls.length} additional operations`;
+  }
+
+  // Generate changes list
+  for (const tc of toolCalls) {
+    if (tc.status === "complete") {
+      if (tc.name === "roblox_get_script") {
+        changes.push("Explored and read script content");
+        verification.push("Script content successfully retrieved");
+      } else if (tc.name === "roblox_edit_script") {
+        changes.push("Edited and updated script content");
+        verification.push("Script edits applied successfully");
+      } else if (tc.name === "roblox_set_script") {
+        changes.push("Completely replaced script content");
+        verification.push("Script replacement completed successfully");
+      } else if (tc.name === "roblox_create") {
+        changes.push("Created new instances in the game");
+        verification.push("Instances created and verified");
+      } else if (tc.name === "roblox_insert_asset") {
+        const result = tc.result as { success?: boolean; assetName?: string; path?: string };
+        if (result?.success) {
+          changes.push(`Inserted ${result.assetName} into the game at ${result.path}`);
+          verification.push("Asset insertion verified");
+        }
+      } else {
+        changes.push(tc.name.replace(/^roblox_/, "").replace(/_/g, " "));
+        verification.push("Operation completed successfully");
+      }
+    } else if (tc.status === "error") {
+      issues.push({
+        message: tc.name.replace(/^roblox_/, "").replace(/_/g, " "),
+        reason: tc.error || "Unknown error occurred",
+        retryable: true,
+        target: `Tool: ${tc.name}`
+      });
+      changes.push(`${tc.name.replace(/^roblox_/, "").replace(/_/g, " ")} - Failed: ${tc.error}`);
+    }
+  }
+
+  // Determine status
+  let status: ExecutionResult["status"] = "completed";
+  if (issues.length > 0 && changes.length > 0) {
+    status = "partial";
+  } else if (issues.length > 0 && changes.length === 0) {
+    status = "failed";
+  } else if (toolCalls.some(tc => tc.status === "pending" || tc.status === "running")) {
+    status = "in_progress";
+  }
+
+  return {
+    taskId,
+    status,
+    title: "Task Execution",
+    summary: summary || "Executed tool operations",
+    progress: {
+      completed: toolCalls.filter(tc => tc.status === "complete").length,
+      total: toolCalls.length
+    },
+    changes: changes.length > 0 ? changes : undefined,
+    verification: verification.length > 0 ? verification : undefined,
+    issues: issues.length > 0 ? issues : undefined,
+    nextAction: issues.length > 0 && issues.some(i => i.retryable) ? "Retry failed steps" : 
+                  status === "completed" ? "Task completed successfully" : 
+                  status === "partial" ? "Review failed steps and retry if needed" : 
+                  "Continue with remaining operations"
+  };
 }

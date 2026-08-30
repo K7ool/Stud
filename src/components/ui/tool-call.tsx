@@ -1,8 +1,45 @@
-import * as React from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { cn } from "@/lib/utils";
 import { Loader } from "./loader";
 import { ChevronDown, ChevronRight, Check, X, Wrench, HelpCircle } from "lucide-react";
 import { ToolboxAssetCard, type ToolboxInsertResult } from "@/components/chat/ToolboxAssetCard";
+import { TaskResultCard } from "./task-result-card";
+
+export interface ExecutionIssue {
+  stepId?: string;
+  message: string;
+  reason?: string;
+  retryable?: boolean;
+  target?: string;
+}
+
+export interface ExecutionResult {
+  taskId?: string;
+  status: "completed" | "partial" | "failed" | "blocked" | "cancelled" | "in_progress";
+  title: string;
+  summary: string;
+  progress?: {
+    completed: number;
+    total: number;
+  };
+  changes?: string[];
+  verification?: string[];
+  issues?: ExecutionIssue[];
+  nextAction?: string;
+  toolCallCount?: number;
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  result?: unknown;
+  status: "pending" | "running" | "complete" | "error" | "waiting";
+  error?: string;
+  duration?: number;
+  requestId?: string;
+  executionResult?: ExecutionResult;
+}
 
 export interface ToolCallProps {
   name: string;
@@ -10,7 +47,9 @@ export interface ToolCallProps {
   output?: unknown;
   status: "pending" | "running" | "complete" | "error" | "waiting";
   error?: string;
+  duration?: number;
   className?: string;
+  executionResult?: ExecutionResult;
 }
 
 // Pretty print tool name (e.g., roblox_get_script -> Get Script)
@@ -22,13 +61,22 @@ function formatToolName(name: string): string {
     .join(" ");
 }
 
+// Format duration in milliseconds
+function formatDuration(ms?: number): string {
+  if (!ms) return "";
+  if (ms < 1000) return `${ms}ms`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
 export function ToolCall({
   name,
   input,
   output,
   status,
   error,
+  duration,
   className,
+  executionResult,
 }: ToolCallProps) {
   const [isExpanded, setIsExpanded] = React.useState(false);
 
@@ -78,7 +126,7 @@ export function ToolCall({
       {/* Header - always visible */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left"
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:opacity-75 transition-opacity"
       >
         {/* Expand/collapse icon */}
         <span className="text-muted-foreground">
@@ -94,28 +142,50 @@ export function ToolCall({
           <Wrench className="w-4 h-4" />
         </span>
 
-        {/* Tool name */}
-        <span className="font-medium text-sm flex-1">
-          {formatToolName(name)}
+        {/* Tool name and duration (compact view) */}
+        <span className="font-medium text-sm flex-1 min-w-0">
+          <span className="truncate">{formatToolName(name)}</span>
+          {duration && !isExpanded && (
+            <span className="text-xs text-muted-foreground ml-2">
+              · {formatDuration(duration)}
+            </span>
+          )}
         </span>
 
         {/* Status indicator */}
-        <span className={cn("flex items-center gap-1.5", color)}>
+        <span className={cn("flex items-center gap-1.5 flex-shrink-0", color)}>
           {icon}
         </span>
       </button>
 
       {/* Expanded content */}
       {isExpanded && (
-        <div className="px-4 pb-4 pt-0 space-y-3">
+        <div className="px-4 pb-4 pt-0 space-y-3 border-t">
+          {/* Duration in expanded view */}
+          {duration && (
+            <div className="text-xs text-muted-foreground">
+              Duration: {formatDuration(duration)}
+            </div>
+          )}
+
+          {/* Task Result - show when executionResult exists */}
+          {executionResult && (
+            <div className="mb-4">
+              <TaskResultCard
+                result={executionResult}
+                toolCallCount={executionResult.toolCallCount}
+              />
+            </div>
+          )}
+
           {/* Rich card for toolbox insertion results */}
           {status === "complete" &&
            name === "roblox_insert_asset" &&
            output != null &&
            typeof output === "object" &&
            (output as Record<string, unknown>).success !== undefined && (
-            <ToolboxAssetCard result={output as ToolboxInsertResult} />
-          )}
+             <ToolboxAssetCard result={output as ToolboxInsertResult} />
+           )}
 
           {/* Input */}
           {input && Object.keys(input).length > 0 && (
@@ -123,7 +193,7 @@ export function ToolCall({
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                 Input
               </p>
-              <pre className="text-xs bg-background/80 rounded-lg p-3 overflow-x-auto border">
+              <pre className="text-xs bg-background/80 rounded-lg p-3 overflow-x-auto border max-h-48 overflow-y-auto">
                 {JSON.stringify(input, null, 2)}
               </pre>
             </div>
@@ -149,7 +219,7 @@ export function ToolCall({
               <p className="text-xs font-medium text-red-600 dark:text-red-400 uppercase tracking-wide">
                 Error
               </p>
-              <pre className="text-xs bg-red-500/10 text-red-600 dark:text-red-400 rounded-lg p-3 overflow-x-auto border border-red-500/20">
+              <pre className="text-xs bg-red-500/10 text-red-600 dark:text-red-400 rounded-lg p-3 overflow-x-auto border border-red-500/20 max-h-48 overflow-y-auto">
                 {error}
               </pre>
             </div>
@@ -160,16 +230,8 @@ export function ToolCall({
   );
 }
 
-// Component to show multiple tool calls in a message
 export interface ToolCallsProps {
-  toolCalls: Array<{
-    id: string;
-    name: string;
-    args: Record<string, unknown>;
-    result?: unknown;
-    status: "pending" | "running" | "complete" | "error" | "waiting";
-    error?: string;
-  }>;
+  toolCalls: ToolCall[];
   className?: string;
 }
 
@@ -186,6 +248,8 @@ export function ToolCalls({ toolCalls, className }: ToolCallsProps) {
           output={tc.result}
           status={tc.status}
           error={tc.error}
+          duration={tc.duration}
+          executionResult={tc.executionResult}
         />
       ))}
     </div>

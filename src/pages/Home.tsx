@@ -15,6 +15,8 @@ import {
 import { ScrollButton } from "@/components/ui/scroll-button";
 import { Message, MessageContent } from "@/components/ui/message";
 import { ToolCalls } from "@/components/ui/tool-call";
+import { ExecutionResultCard } from "@/components/ui/execution-result-card";
+import { ToolActivityGroup } from "@/components/ui/tool-activity-group";
 import { Loader } from "@/components/ui/loader";
 import { Logo, LogoMark } from "@/components/icons/Logo";
 import { BotAvatar, UserAvatar } from "@/components/icons/Avatars";
@@ -2118,9 +2120,21 @@ export function Home() {
                   </div>
                 )}
 
-                {/* Tool calls (shown before content for assistant) */}
+                {/* Execution result (shown first) */}
+                {message.role === "assistant" && message.executionResult && (
+                  <ExecutionResultCard 
+                    result={message.executionResult}
+                    toolCallCount={message.toolCalls?.length || 0}
+                    className="mb-3"
+                  />
+                )}
+
+                {/* Tool calls (shown in collapsible group) */}
                 {message.role === "assistant" && message.toolCalls && message.toolCalls.length > 0 && (
-                  <ToolCalls toolCalls={message.toolCalls} />
+                  <ToolActivityGroup 
+                    toolCalls={message.toolCalls}
+                    className="mb-3"
+                  />
                 )}
 
                 {/* Message content */}

@@ -144,6 +144,8 @@ export interface ChatState {
   setQuestionResolver: (resolver: ((answers: (string | string[])[]) => void) | null) => void;
   answerQuestion: (answers: (string | string[])[]) => void;
   hydrateFromServer: () => Promise<void>;
+  updateExecutionResult: (messageId: string, executionResult: ExecutionResult) => void;
+  updateExecutionStatus: (messageId: string, status: ExecutionResult["status"], summary?: string) => void;
 }
 
 interface PersistedShape {
@@ -591,4 +593,55 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       set({ hydrated: true });
     }
   },
-}));
+
+  updateExecutionResult: (messageId: string, executionResult: ExecutionResult) => {
+    const sessionId = get().currentSessionId;
+    if (!sessionId) return;
+    set((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              messages: session.messages.map((msg) =>
+                msg.id === messageId ? { ...msg, executionResult } : msg
+              ),
+            }
+          : session
+      ),
+    }));
+    schedulePersist(get().sessions, sessionId);
+    scheduleServerSync("all", sessionId);
+  },
+
+  updateExecutionStatus: (messageId: string, status: ExecutionResult["status"], summary?: string) => {
+    let sessionId = "";
+    set((state) => {
+      sessionId = state.currentSessionId || "";
+      return {
+        sessions: state.sessions.map((session) =>
+          session.id === state.currentSessionId
+            ? {
+                ...session,
+                messages: session.messages.map((msg) =>
+                  msg.id === messageId && msg.executionResult
+                    ? {
+                        ...msg,
+                        executionResult: {
+                          ...msg.executionResult,
+                          status,
+                          summary: summary || msg.executionResult.summary,
+                        },
+                      }
+                    : msg
+                ),
+              }
+            : session
+        ),
+      };
+    });
+    schedulePersist(get().sessions, get().currentSessionId);
+    if (sessionId) scheduleServerSync("all", sessionId);
+  },
+
+  ... // Rest of the store implementation continues here
+}))
