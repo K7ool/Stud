@@ -577,12 +577,23 @@ Examples of when to search:
     const safeLimit = Math.max(1, Math.min(limit, 50));
     const result = await searchToolbox(query, category, safeLimit);
 
+    // Surface errors clearly so the AI can report them
+    if (result.error) {
+      return {
+        error: result.error,
+        message: `Toolbox search failed: ${result.error}. This may be a temporary rate limit. Try again in a few moments or use a different keyword.`,
+        query,
+        category,
+        results: [],
+      };
+    }
+
     if (result.assets.length === 0) {
       return {
         message: `No ${category.toLowerCase()}s found for "${query}". Try a different keyword or category.`,
-        results: [],
         query,
         category,
+        results: [],
       };
     }
 

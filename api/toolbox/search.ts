@@ -87,7 +87,7 @@ async function searchCreatorStore(
   keyword: string,
   category: string,
   limit: number,
-): Promise<RobloxSearchResult[]> {
+): Promise<{ results: RobloxSearchResult[]; failed: boolean }> {
   const assetType = CATEGORY_TO_ASSET_TYPE[category] ?? 10;
   const url = new URL("https://catalog.roblox.com/v1/search/items");
   url.searchParams.set("Category", "1");
@@ -99,42 +99,51 @@ async function searchCreatorStore(
   url.searchParams.set("IncludeNotForSale", "false");
   url.searchParams.set("Limit", String(Math.min(limit, 30)));
 
-  const res = await fetch(url.toString(), { headers: ROBLOX_HEADERS });
-  if (!res.ok) {
-    console.error("[toolbox-search] catalog search failed:", res.status, await res.text());
-    return [];
+  let lastStatus = 0;
+  let lastError = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 500 * attempt));
+    const res = await fetch(url.toString(), { headers: ROBLOX_HEADERS });
+    lastStatus = res.status;
+    if (res.status === 429) {
+      lastError = "Rate limited by Roblox";
+      continue;
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      lastError = `HTTP ${res.status}: ${body.slice(0, 100)}`;
+      if (res.status < 500) break;
+      continue;
+    }
+    const json = (await res.json()) as {
+      data?: Array<{ id: number; itemType: string }>;
+    };
+    const items = json.data ?? [];
+    if (items.length === 0) return { results: [], failed: false };
+    const ids = items.map((it) => it.id);
+    const [detailsMap, thumbnailMap] = await Promise.all([
+      fetchAssetDetailsBatch(ids),
+      fetchThumbnailsBatch(ids),
+    ]);
+    const results: RobloxSearchResult[] = ids
+      .map((id) => {
+        const details = detailsMap[id];
+        if (!details) return null;
+        return {
+          id,
+          name: details.name,
+          thumbnailUrl: thumbnailMap[id],
+          creatorName: details.creatorName,
+          creatorId: details.creatorId,
+          price: details.price,
+          assetType: category,
+        };
+      })
+      .filter(Boolean) as RobloxSearchResult[];
+    return { results, failed: false };
   }
-
-  const json = (await res.json()) as {
-    data?: Array<{ id: number; itemType: string }>;
-    nextPageCursor?: string;
-  };
-
-  const items = json.data ?? [];
-  if (items.length === 0) return [];
-
-  // Batch-fetch details and thumbnails for the returned IDs
-  const ids = items.map((it) => it.id);
-  const [detailsMap, thumbnailMap] = await Promise.all([
-    fetchAssetDetailsBatch(ids),
-    fetchThumbnailsBatch(ids),
-  ]);
-
-  return ids
-    .map((id) => {
-      const details = detailsMap[id];
-      if (!details) return null;
-      return {
-        id,
-        name: details.name,
-        thumbnailUrl: thumbnailMap[id],
-        creatorName: details.creatorName,
-        creatorId: details.creatorId,
-        price: details.price,
-        assetType: category,
-      };
-    })
-    .filter(Boolean) as RobloxSearchResult[];
+  console.error(`[toolbox-search] catalog search failed after retries: ${lastError} (status ${lastStatus})`);
+  return { results: [], failed: true };
 }
 
 async function fetchAssetDetailsBatch(
@@ -261,11 +270,23 @@ export default async function handler(req: Request): Promise<Response> {
 
   // Fetch
   let results: RobloxSearchResult[] = [];
+  let failed = false;
   try {
-    results = await searchCreatorStore(q, category, limit);
+    const searchResult = await searchCreatorStore(q, category, limit);
+    results = searchResult.results;
+    failed = searchResult.failed;
   } catch (e) {
     return cors(new Response(JSON.stringify({ error: `Search failed: ${e}` }), {
       status: 502, headers: { "Content-Type": "application/json" },
+    }));
+  }
+
+  if (failed) {
+    return cors(new Response(JSON.stringify({
+      error: "Roblox catalog search is temporarily unavailable (rate limited). Please try again in a few moments.",
+      results: [],
+    }), {
+      status: 503, headers: { "Content-Type": "application/json" },
     }));
   }
 

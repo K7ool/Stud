@@ -23,6 +23,7 @@ export interface ToolboxAsset {
 export interface ToolboxSearchResult {
   assets: ToolboxAsset[];
   nextPageCursor?: string;
+  error?: string;
 }
 
 export type AssetCategory = "Model" | "Decal" | "Audio" | "Plugin" | "MeshPart";
@@ -36,31 +37,50 @@ async function webSearchToolbox(
   limit: number
 ): Promise<ToolboxSearchResult> {
   const url = `/api/toolbox/search?q=${encodeURIComponent(query)}&type=${encodeURIComponent(category)}&limit=${limit}`;
-  const res = await fetch(url);
-  if (!res.ok) return { assets: [] };
-  const data = (await res.json()) as {
-    results: Array<{
-      id: number;
-      name: string;
-      thumbnailUrl?: string;
-      creatorName?: string;
-      creatorId?: number;
-      price?: number | null;
-      assetType?: string;
-    }>;
-  };
-  const assets: ToolboxAsset[] = (data.results ?? []).map((r) => ({
-    id: r.id,
-    name: r.name,
-    description: "",
-    creatorName: r.creatorName ?? "Unknown",
-    creatorId: r.creatorId ?? 0,
-    thumbnailUrl: r.thumbnailUrl,
-    favoriteCount: 0,
-    created: "",
-    updated: "",
-  }));
-  return { assets };
+  let errorMessage: string | undefined;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try {
+        const errBody = (await res.json()) as { error?: string };
+        if (errBody?.error) msg = errBody.error;
+      } catch {
+        /* ignore parse errors */
+      }
+      errorMessage = msg;
+    }
+    const data = (await res.json()) as {
+      results?: Array<{
+        id: number;
+        name: string;
+        thumbnailUrl?: string;
+        creatorName?: string;
+        creatorId?: number;
+        price?: number | null;
+        assetType?: string;
+      }>;
+      error?: string;
+    };
+    if (data.error && !errorMessage) errorMessage = data.error;
+    const assets: ToolboxAsset[] = (data.results ?? []).map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: "",
+      creatorName: r.creatorName ?? "Unknown",
+      creatorId: r.creatorId ?? 0,
+      thumbnailUrl: r.thumbnailUrl,
+      favoriteCount: 0,
+      created: "",
+      updated: "",
+    }));
+    if (errorMessage && assets.length === 0) {
+      return { assets: [], error: errorMessage };
+    }
+    return { assets };
+  } catch (e) {
+    return { assets: [], error: `Network error: ${e}` };
+  }
 }
 
 async function webGetAssetDetails(assetId: number): Promise<ToolboxAsset | null> {
