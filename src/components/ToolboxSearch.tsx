@@ -82,7 +82,7 @@ export function ToolboxSearch({ open, onOpenChange, onInserted }: Props) {
       <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <div className="flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-primary" />
-          <h2 className="font-medium">Toolbox</h2>
+          <h2 className="font-medium text-foreground">Toolbox</h2>
         </div>
         <Button
           variant="ghost"
@@ -133,22 +133,22 @@ export function ToolboxSearch({ open, onOpenChange, onInserted }: Props) {
         {loading && results.length === 0 && (
           <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
             <Loader variant="circular" />
-            <p className="mt-3 text-sm">Searching {ASSET_TYPES.find((t) => t.value === type)?.label}...</p>
+            <p className="mt-3 text-sm text-muted-foreground">Searching {ASSET_TYPES.find((t) => t.value === type)?.label}...</p>
           </div>
         )}
 
         {!loading && query && results.length === 0 && !error && (
           <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
             <Search className="w-8 h-8 mb-2 opacity-50" />
-            <p className="text-sm">No results</p>
+            <p className="text-sm text-muted-foreground">No results</p>
           </div>
         )}
 
         {!query && (
           <div className="flex flex-col items-center justify-center py-12 text-muted-foreground text-center px-4">
             <Sparkles className="w-10 h-10 mb-3 opacity-50" />
-            <p className="text-sm font-medium mb-1">Find assets for your game</p>
-            <p className="text-xs opacity-75">
+            <p className="text-sm font-medium mb-1 text-foreground">Find assets for your game</p>
+            <p className="text-xs opacity-75 text-muted-foreground">
               Search the Roblox Creator Store. Click any asset to insert it into your place.
             </p>
           </div>
@@ -184,7 +184,7 @@ export function ToolboxSearch({ open, onOpenChange, onInserted }: Props) {
                   )}
                 </div>
                 <div className="p-2 space-y-0.5">
-                  <p className="text-xs font-medium line-clamp-2 leading-tight">{asset.name}</p>
+                  <p className="text-xs font-medium line-clamp-2 leading-tight text-foreground">{asset.name}</p>
                   <p className="text-[10px] text-muted-foreground truncate">
                     {asset.creatorName ?? "Roblox"}
                     {asset.price ? ` · R$ ${asset.price}` : asset.price === 0 ? " · Free" : ""}
