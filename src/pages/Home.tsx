@@ -37,9 +37,9 @@ import { useRobloxStore, ConnectionStatus } from "@/stores/roblox";
 import { usePluginStore } from "@/stores/plugin";
 import { useAuthStore } from "@/stores/auth";
 import { useGameMapStore } from "@/stores/gameMap";
-import { StudioPairing } from "@/components/StudioPairing";
 import { useChat } from "@/lib/ai/providers";
 import { setAskUserHandler } from "@/lib/roblox/tools";
+import { getStudioSiteId } from "@/lib/roblox/client";
 import { autoDetectProject, setProjectPath, pickFolder } from "@/lib/file-ops";
 import { useAppShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { improvePrompt } from "@/lib/ai/prompt-improver";
@@ -161,25 +161,17 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
   };
 
   const handleDownloadPlugin = async () => {
-    // Fetch the plugin content and trigger download
+    // Fetch a plugin pre-configured with this site's unique ID
+    const siteId = getStudioSiteId();
+    const url = `/api/stud/plugin?site=${siteId}`;
     try {
-      const response = await fetch("/studio-plugin/stud-bridge.server.lua");
-      if (!response.ok) {
-        // If not available via fetch, we'll use the embedded version from Tauri
-        // For now, show manual path
-        setShowManualPath(true);
-        return;
-      }
-      const content = await response.text();
-      const blob = new Blob([content], { type: "text/plain" });
-      const url = URL.createObjectURL(blob);
+      // Trigger a direct browser download
       const a = document.createElement("a");
       a.href = url;
       a.download = "stud-bridge.server.lua";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
     } catch {
       setShowManualPath(true);
     }
@@ -205,7 +197,6 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
       <header className="flex items-center justify-between px-6 py-4">
         <Logo />
         <div className="flex items-center gap-2">
-          <StudioPairing />
           <SettingsDialog />
         </div>
       </header>
@@ -225,19 +216,6 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
               <Loader variant="terminal" text="Waiting for connection" size="sm" />
             </p>
           </div>
-
-          {/* Web pairing instructions */}
-          {isWebMode && (
-            <div className="bg-card rounded-2xl border border-border p-5 space-y-3">
-              <h2 className="font-medium text-foreground">Pair with Roblox Studio</h2>
-              <ol className="text-sm text-muted-foreground space-y-1.5 list-decimal list-inside">
-                <li>Click <span className="font-medium text-foreground">Connect Studio</span> above to get a 6-character code</li>
-                <li>In Roblox Studio, open the stud-bridge plugin's dock widget</li>
-                <li>Type the code into the <span className="font-medium text-foreground">Pair with Web App</span> field, click <span className="font-medium text-foreground">Pair</span></li>
-                <li>The plugin will link with this site within a few seconds</li>
-              </ol>
-            </div>
-          )}
 
           {/* Connection steps */}
           <div className="bg-card rounded-2xl border border-border p-6 space-y-6">
@@ -266,6 +244,36 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
               status={getStepStatus(3)}
             />
           </div>
+
+          {isWebMode && (
+            <div className="bg-card rounded-2xl border border-border p-5 space-y-3">
+              <h2 className="font-medium text-foreground">Connect Roblox Studio to this site</h2>
+              <p className="text-sm text-muted-foreground">
+                Click the button below to download the plugin with your unique site ID already
+                baked in. Save the file to your Roblox Plugins folder and restart Studio.
+              </p>
+              <Button
+                variant="default"
+                size="lg"
+                className="w-full"
+                onClick={handleDownloadPlugin}
+              >
+                <Download className="w-4 h-4 mr-2" />
+                Download stud-bridge plugin
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                Your site ID: <span className="font-mono select-all">{getStudioSiteId()}</span>
+              </p>
+              <div className="text-sm text-muted-foreground">
+                <p className="font-medium text-foreground mb-1">Install steps:</p>
+                <ol className="space-y-1 list-decimal list-inside">
+                  <li>Save the downloaded file to <code className="font-mono text-xs bg-muted px-1 rounded">%LOCALAPPDATA%\Roblox\Plugins</code> (Windows) or <code className="font-mono text-xs bg-muted px-1 rounded">~/Documents/Roblox/Plugins</code> (Mac)</li>
+                  <li>Enable HTTP requests in Game Settings → Security</li>
+                  <li>Restart Roblox Studio — the plugin auto-connects</li>
+                </ol>
+              </div>
+            </div>
+          )}
 
           {/* Plugin Installation Card */}
           <div className="bg-card rounded-2xl border border-border p-5 space-y-4">
@@ -717,14 +725,9 @@ export function Home() {
     handleSubmit();
   };
 
-  // Show connection screen if not connected (unless workWithoutStudio is enabled
-  // or the user has a pairing code — they're paired or about to be).
+  // Show connection screen if not connected (unless workWithoutStudio is enabled).
   const canWorkOffline = appSettings.workWithoutStudio;
-  const hasPairCode = typeof window !== "undefined"
-    ? !!localStorage.getItem("stud:pairCode")
-    : false;
-  const effectiveConnected = isConnected || hasPairCode;
-  if (!effectiveConnected && !canWorkOffline) {
+  if (!isConnected && !canWorkOffline) {
     return <ConnectionScreen status={studioStatus} />;
   }
 
@@ -1196,7 +1199,6 @@ export function Home() {
             onClear={clearMessages}
             disabled={messages.length === 0 || isStreaming}
           />
-          <StudioPairing />
           <SettingsPanel
             trigger={
               <Button variant="ghost" size="icon" className="h-8 w-8">

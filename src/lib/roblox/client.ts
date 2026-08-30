@@ -1,17 +1,16 @@
 /**
- * Roblox Studio communication — pair-based WebSocket relay.
+ * Roblox Studio communication — stateless Web relay.
  *
- * The Roblox plugin does NOT connect to the website directly. Instead:
- *   1. The web app creates a 6-character pairing code via POST /api/pair/create.
- *   2. The user pastes the code into the plugin's dock widget. The plugin
- *      opens a WebSocket to /api/studio/ws?code=XXXXXX.
- *   3. The relay links the WS to the pair. The web app then sends commands
- *      via POST /api/studio/request (X-Pair-Code header), which the relay
- *      forwards to the plugin over WS.
+ * Protocol:
+ *   1. Browser gets a random 16-char siteId (stored in localStorage).
+ *   2. Plugin polls  GET  /api/stud/cmd?site=X     every 200ms
+ *   3. Web app pushes POST /api/stud/push?site=X    with { id, path, body }
+ *   4. Plugin executes the request, then POSTs the result to
+ *      /api/stud/result?site=X  with { id, response: { status, body } }
+ *   5. Web app polls GET /api/stud/result?site=X&id=Y for the response
  *
- * The Tauri desktop mode (localhost:3001) is preserved for users who run
- * the desktop app; the pair-based relay is auto-selected when running on
- * the web (browser, no Tauri runtime).
+ * No pairing code, no shared state on the server — just a shared cache
+ * (Vercel Edge `caches.default`) for command/result delivery.
  */
 
 const BRIDGE_URL =
@@ -20,57 +19,32 @@ const RELAY_BASE =
   (import.meta.env.VITE_STUD_RELAY_URL as string | undefined) ??
   (typeof window !== "undefined" ? window.location.origin : "");
 const TIMEOUT_MS = 60_000;
+const RESULT_POLL_MS = 100;
 
 const isWebMode =
   typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
 
-const PAIR_KEY = "stud:pairCode";
+const SITE_KEY = "stud:siteId";
+
+function getSiteId(): string {
+  if (typeof localStorage === "undefined") return "";
+  let id = localStorage.getItem(SITE_KEY);
+  if (!id) {
+    const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+    id = "";
+    for (let i = 0; i < 16; i++) id += chars[Math.floor(Math.random() * chars.length)];
+    localStorage.setItem(SITE_KEY, id);
+  }
+  return id;
+}
+
+export function getStudioSiteId(): string {
+  return getSiteId();
+}
 
 export type StudioResponse<T> =
   | { success: true; data: T }
   | { success: false; error: string };
-
-function getStoredPairCode(): string | null {
-  if (typeof localStorage === "undefined") return null;
-  return localStorage.getItem(PAIR_KEY);
-}
-
-function setStoredPairCode(code: string | null): void {
-  if (typeof localStorage === "undefined") return;
-  if (code) localStorage.setItem(PAIR_KEY, code);
-  else localStorage.removeItem(PAIR_KEY);
-}
-
-export async function createPair(): Promise<{ code: string; expiresAt: number }> {
-  const res = await fetch(`${RELAY_BASE}/api/pair/create`, { method: "POST" });
-  if (!res.ok) throw new Error(`Failed to create pair: ${res.status}`);
-  const data = (await res.json()) as { code: string; expiresAt: number };
-  setStoredPairCode(data.code);
-  return data;
-}
-
-export function getPairCode(): string | null {
-  return getStoredPairCode();
-}
-
-export function clearPair(): void {
-  setStoredPairCode(null);
-}
-
-export async function checkPairStatus(
-  code: string,
-): Promise<{ connected: boolean; project: string | null }> {
-  try {
-    const res = await fetch(
-      `${RELAY_BASE}/api/studio/status?code=${encodeURIComponent(code)}`,
-      { signal: AbortSignal.timeout(2000) },
-    );
-    if (!res.ok) return { connected: false, project: null };
-    return (await res.json()) as { connected: boolean; project: string | null };
-  } catch {
-    return { connected: false, project: null };
-  }
-}
 
 export async function studioRequest<T>(
   endpoint: string,
@@ -86,56 +60,60 @@ async function studioRequestViaRelay<T>(
   endpoint: string,
   data?: object,
 ): Promise<StudioResponse<T>> {
-  const code = getStoredPairCode();
-  if (!code) {
-    return {
-      success: false,
-      error:
-        "Not paired with Roblox Studio. Click 'Connect Studio' to generate a pairing code, then enter it in the Studio plugin.",
-    };
+  const site = getSiteId();
+  if (!site) {
+    return { success: false, error: "No siteId" };
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const id = (typeof crypto !== "undefined" && "randomUUID" in crypto)
+    ? crypto.randomUUID()
+    : (Math.random().toString(36).slice(2) + Date.now().toString(36));
 
+  // Push the command
   try {
-    const res = await fetch(`${RELAY_BASE}/api/studio/request`, {
+    const pushRes = await fetch(`${RELAY_BASE}/api/stud/push?site=${site}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Pair-Code": code,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        id: crypto.randomUUID(),
+        id,
         path: endpoint,
         body: data ? JSON.stringify(data) : undefined,
       }),
-      signal: controller.signal,
     });
-
-    const text = await res.text();
-    let json: any;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      return { success: false, error: `Bad response (${res.status}): ${text}` };
+    if (!pushRes.ok && pushRes.status !== 202) {
+      return { success: false, error: `Push failed: ${pushRes.status}` };
     }
-
-    if (!res.ok) {
-      if (res.status === 401) clearPair();
-      return { success: false, error: json.error ?? `Error ${res.status}` };
-    }
-
-    if (json.error) return { success: false, error: json.error };
-    return { success: true, data: json as T };
   } catch (e) {
-    if (e instanceof Error && e.name === "AbortError") {
-      return { success: false, error: "Request timed out waiting for Studio response" };
-    }
-    return { success: false, error: `Failed to connect: ${e}` };
-  } finally {
-    clearTimeout(timer);
+    return { success: false, error: `Failed to push: ${e}` };
   }
+
+  // Poll for result
+  const deadline = Date.now() + TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, RESULT_POLL_MS));
+    try {
+      const res = await fetch(
+        `${RELAY_BASE}/api/stud/result?site=${site}&id=${id}`,
+        { method: "GET" },
+      );
+      if (res.status === 200) {
+        const text = await res.text();
+        let json: any;
+        try {
+          json = JSON.parse(text);
+        } catch {
+          return { success: false, error: `Bad response: ${text}` };
+        }
+        if (json.error) return { success: false, error: json.error };
+        return { success: true, data: json as T };
+      }
+      // 204 = not ready yet, keep polling
+    } catch {
+      // network blip, keep polling
+    }
+  }
+
+  return { success: false, error: "Studio request timed out" };
 }
 
 async function studioRequestViaLocal<T>(
@@ -183,10 +161,9 @@ async function studioRequestViaLocal<T>(
 
 export async function isStudioConnected(): Promise<boolean> {
   if (isWebMode) {
-    const code = getStoredPairCode();
-    if (!code) return false;
-    const status = await checkPairStatus(code);
-    return status.connected;
+    // We can't know for sure without polling, but assume yes if a siteId
+    // exists. The actual call will fail fast if no plugin is listening.
+    return !!getSiteId();
   }
 
   try {
@@ -219,11 +196,11 @@ export function notConnectedError(): string {
   if (isWebMode) {
     return `Roblox Studio is not connected.
 
-To use Roblox Studio tools from the web:
+To connect:
 1. Open Roblox Studio and install the stud-bridge plugin
-2. Click 'Connect Studio' here to get a pairing code
-3. Paste the code into the plugin's dock widget
-4. The plugin will pair with this website`;
+2. Edit the plugin's POLL_URL to point at this site:
+   ${RELAY_BASE}/api/stud/cmd?site=${getSiteId()}
+3. The plugin will start receiving commands immediately`;
   }
 
   return `Roblox Studio is not connected.
