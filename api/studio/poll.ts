@@ -14,7 +14,7 @@ function cors(res: Response): Response {
   res.headers.set("Access-Control-Allow-Origin", "*");
   res.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.headers.set("Access-Control-Allow-Headers", "Content-Type, X-Pair-Code");
-  return cors;
+  return res;
 }
 
 export default async function handler(req: Request): Promise<Response> {

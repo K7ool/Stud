@@ -6,7 +6,7 @@
  * Queues a request for the plugin to pick up on its next /api/studio/poll,
  * then polls KV for the matching response (written by /api/studio/respond).
  */
-import { kvGet, kvSet, type Pair } from "../kv";
+import { kvDel, kvGet, kvSet, type Pair } from "../kv";
 
 export const config = { runtime: "edge" };
 
@@ -76,10 +76,7 @@ export default async function handler(req: Request): Promise<Response> {
     const resp = await kvGet<{ status: number; body: string | null }>(`resp:${code}:${id}`);
     if (resp) {
       // Cleanup
-      try {
-        const { kvDel } = await import("../kv");
-        await kvDel(`resp:${code}:${id}`);
-      } catch {}
+      await kvDel(`resp:${code}:${id}`);
 
       let parsed: any = null;
       try {
