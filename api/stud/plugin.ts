@@ -394,6 +394,31 @@ local function isDescendantOf(target, ancestor)
 	return false
 end
 
+-- Update a Lua source container's code without ever hanging the plugin.
+--
+-- ScriptEditorService:UpdateSourceAsync yields while the Script Editor
+-- processes the change and can stall indefinitely when the script is open or
+-- the editor is busy. We run it on its own thread with a watchdog; if it
+-- doesn't complete in time we fall back to the synchronous, non-yielding
+-- `instance.Source = newSource` assignment, which never blocks.
+local function updateScriptSource(instance, newSource)
+	local useEditor = ScriptEditorService and ScriptEditorService:UpdateSourceAsync
+	if useEditor then
+		local done = false
+		local watchdog = task.delay(4, function() done = true end)
+		local ok, err = pcall(function()
+			ScriptEditorService:UpdateSourceAsync(instance, function() return newSource end)
+		end)
+		task.cancel(watchdog)
+		if ok and not done then return true, nil end
+		if err and tostring(err) ~= "" then
+			print("[stud-bridge] UpdateSourceAsync failed, falling back to .Source: " .. tostring(err))
+		end
+	end
+	local ok, err = pcall(function() instance.Source = newSource end)
+	return ok, ok and nil or tostring(err)
+end
+
 local handlers = {}
 handlers["/ping"] = function() return { status = "ok", plugin = PLUGIN_NAME } end
 handlers["/script/get"] = function(data)
@@ -407,7 +432,8 @@ handlers["/script/set"] = function(data)
 	local i = getInstanceFromPath(data.path)
 	if not i then error("Instance not found: " .. data.path) end
 	if not i:IsA("LuaSourceContainer") then error("Not a script: " .. data.path) end
-	ScriptEditorService:UpdateSourceAsync(i, function() return data.source end)
+	local ok, err = updateScriptSource(i, data.source)
+	if not ok then error("Failed to write script: " .. tostring(err)) end
 	return { path = getInstancePath(i) }
 end
 handlers["/script/edit"] = function(data)
@@ -417,7 +443,8 @@ handlers["/script/edit"] = function(data)
 	local s = ScriptEditorService:GetEditorSource(i); if not s then s = i.Source end
 	local ns, count = string.gsub(s, data.oldCode, data.newCode)
 	if count == 0 then error("Code not found in script") end
-	ScriptEditorService:UpdateSourceAsync(i, function() return ns end)
+	local ok, err = updateScriptSource(i, ns)
+	if not ok then error("Failed to edit script: " .. tostring(err)) end
 	return { path = getInstancePath(i), replaced = count }
 end
 handlers["/instance/children"] = function(data)
@@ -672,19 +699,26 @@ local function pollServer()
 				end
 				local data = jsonDecode(response.Body)
 				if data and data.request then
+					-- Dispatch each request on its own thread so a slow handler
+					-- (e.g. a ScriptEditor source update) can never freeze the
+					-- poll loop. If it did, the plugin would stop answering every
+					-- command and the web client would time out with
+					-- "Studio request timed out".
 					local req = data.request; local reqId = req.id
-					local ok2, result = pcall(handleRequest, req)
-					if not ok2 then print("[stud-bridge] handler error:", tostring(result)) end
-					if reqId then
-						local ok3, respondErr = pcall(function()
-							return HttpService:RequestAsync({
-								Url = RESULT_URL, Method = "POST",
-								Headers = { ["Content-Type"] = "application/json" },
-								Body = jsonEncode({ id = reqId, response = result }),
-							})
-						end)
-						if not ok3 then print("[stud-bridge] respond failed:", tostring(respondErr)) end
-					end
+					task.spawn(function()
+						local ok2, result = pcall(handleRequest, req)
+						if not ok2 then print("[stud-bridge] handler error:", tostring(result)) end
+						if reqId then
+							local ok3, respondErr = pcall(function()
+								return HttpService:RequestAsync({
+									Url = RESULT_URL, Method = "POST",
+									Headers = { ["Content-Type"] = "application/json" },
+									Body = jsonEncode({ id = reqId, response = result }),
+								})
+							end)
+							if not ok3 then print("[stud-bridge] respond failed:", tostring(respondErr)) end
+						end
+					end)
 				end
 			elseif response.StatusCode == 204 then
 				failCount = 0
