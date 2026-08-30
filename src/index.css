@@ -1,0 +1,351 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Custom Fonts */
+@font-face {
+  font-family: 'Raster';
+  src: url('/fonts/Raster.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Maxi';
+  src: url('/fonts/Maxi.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  /* Monochrome theme - Black & White */
+  --color-background: #FFFFFF;
+  --color-foreground: #0A0A0A;
+  --color-card: #FFFFFF;
+  --color-card-foreground: #0A0A0A;
+  --color-popover: #FFFFFF;
+  --color-popover-foreground: #0A0A0A;
+  --color-primary: #0A0A0A;
+  --color-primary-foreground: #FFFFFF;
+  --color-secondary: #F5F5F5;
+  --color-secondary-foreground: #0A0A0A;
+  --color-muted: #F5F5F5;
+  --color-muted-foreground: #737373;
+  --color-accent: #F5F5F5;
+  --color-accent-foreground: #0A0A0A;
+  --color-destructive: #DC2626;
+  --color-destructive-foreground: #FFFFFF;
+  --color-border: #E5E5E5;
+  --color-input: #E5E5E5;
+  --color-ring: #0A0A0A;
+
+  /* Status colors (minimal) */
+  --color-studio-connected: #16A34A;
+  --color-studio-disconnected: #A3A3A3;
+
+  /* Radius */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.25rem;
+  --radius-2xl: 1.5rem;
+  --radius-3xl: 2rem;
+}
+
+/* Dark theme */
+.dark {
+  --color-background: #0A0A0A;
+  --color-foreground: #FAFAFA;
+  --color-card: #141414;
+  --color-card-foreground: #FAFAFA;
+  --color-popover: #141414;
+  --color-popover-foreground: #FAFAFA;
+  --color-primary: #FAFAFA;
+  --color-primary-foreground: #0A0A0A;
+  --color-secondary: #262626;
+  --color-secondary-foreground: #FAFAFA;
+  --color-muted: #262626;
+  --color-muted-foreground: #A3A3A3;
+  --color-accent: #262626;
+  --color-accent-foreground: #FAFAFA;
+  --color-destructive: #EF4444;
+  --color-destructive-foreground: #FFFFFF;
+  --color-border: #262626;
+  --color-input: #262626;
+  --color-ring: #FAFAFA;
+}
+
+/* Base styles */
+* {
+  border-color: var(--color-border);
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-family: 'Manrope', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Font utility classes */
+.font-logo {
+  font-family: 'Raster', system-ui, sans-serif;
+}
+
+.font-heading {
+  font-family: 'Maxi', system-ui, sans-serif;
+}
+
+.font-body {
+  font-family: 'Manrope', system-ui, sans-serif;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted-foreground);
+}
+
+/* Loader animations for prompt-kit */
+@keyframes typing {
+  0%, 100% {
+    transform: translateY(0);
+    opacity: 0.5;
+  }
+  50% {
+    transform: translateY(-2px);
+    opacity: 1;
+  }
+}
+
+@keyframes loading-dots {
+  0%, 100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes pulse-dot {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.5);
+    opacity: 1;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% center;
+  }
+  100% {
+    background-position: -200% center;
+  }
+}
+
+@keyframes text-blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes wave {
+  0%, 100% {
+    transform: scaleY(0.5);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes wave-bars {
+  0%, 100% {
+    transform: scaleY(0.4);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes bounce-dots {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes thin-pulse {
+  0%, 100% {
+    transform: scale(0.95);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes spinner-fade {
+  0%, 100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Custom animations */
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes glow {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.15);
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out forwards;
+}
+
+.animate-slide-down {
+  animation: slide-down 0.3s ease-out forwards;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out forwards;
+}
+
+.animate-scale-in {
+  animation: scale-in 0.2s ease-out forwards;
+}
+
+.animate-glow {
+  animation: glow 2s ease-in-out infinite;
+}
+
+.animate-shimmer {
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Staggered animation delays */
+.stagger-1 { animation-delay: 0.05s; }
+.stagger-2 { animation-delay: 0.1s; }
+.stagger-3 { animation-delay: 0.15s; }
+.stagger-4 { animation-delay: 0.2s; }
+.stagger-5 { animation-delay: 0.25s; }
+
+/* Message animations */
+.message-enter {
+  animation: slide-up 0.3s ease-out forwards;
+}
+
+/* Tool call animations */
+.tool-call-enter {
+  animation: scale-in 0.2s ease-out forwards;
+}
+
+/* Hover effects */
+.hover-lift {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+/* Smooth transitions */
+.transition-smooth {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Focus ring */
+.focus-ring {
+  @apply focus:outline-none focus:ring-2 focus:ring-primary/20 focus:ring-offset-2;
+}
