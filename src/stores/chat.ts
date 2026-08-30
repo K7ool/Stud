@@ -642,6 +642,4 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     schedulePersist(get().sessions, get().currentSessionId);
     if (sessionId) scheduleServerSync("all", sessionId);
   },
-
-  ... // Rest of the store implementation continues here
 }))

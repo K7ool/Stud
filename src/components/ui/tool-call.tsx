@@ -3,43 +3,7 @@ import { cn } from "@/lib/utils";
 import { Loader } from "./loader";
 import { ChevronDown, ChevronRight, Check, X, Wrench, HelpCircle } from "lucide-react";
 import { ToolboxAssetCard, type ToolboxInsertResult } from "@/components/chat/ToolboxAssetCard";
-import { TaskResultCard } from "./task-result-card";
-
-export interface ExecutionIssue {
-  stepId?: string;
-  message: string;
-  reason?: string;
-  retryable?: boolean;
-  target?: string;
-}
-
-export interface ExecutionResult {
-  taskId?: string;
-  status: "completed" | "partial" | "failed" | "blocked" | "cancelled" | "in_progress";
-  title: string;
-  summary: string;
-  progress?: {
-    completed: number;
-    total: number;
-  };
-  changes?: string[];
-  verification?: string[];
-  issues?: ExecutionIssue[];
-  nextAction?: string;
-  toolCallCount?: number;
-}
-
-export interface ToolCall {
-  id: string;
-  name: string;
-  args: Record<string, unknown>;
-  result?: unknown;
-  status: "pending" | "running" | "complete" | "error" | "waiting";
-  error?: string;
-  duration?: number;
-  requestId?: string;
-  executionResult?: ExecutionResult;
-}
+import type { ExecutionResult, ToolCall, ExecutionIssue } from "@/stores/chat";
 
 export interface ToolCallProps {
   name: string;
@@ -165,16 +129,6 @@ export function ToolCall({
           {duration && (
             <div className="text-xs text-muted-foreground">
               Duration: {formatDuration(duration)}
-            </div>
-          )}
-
-          {/* Task Result - show when executionResult exists */}
-          {executionResult && (
-            <div className="mb-4">
-              <TaskResultCard
-                result={executionResult}
-                toolCallCount={executionResult.toolCallCount}
-              />
             </div>
           )}
 

@@ -228,13 +228,24 @@ export function ExecutionResultCard({
         )}
 
         {/* Technical Details */}
-        {expandedSections.has("technical") && (
-              <div className="space-y-1.5 ml-6 mt-2 text-xs font-mono">
-                {toolCallCount > 0 && (
-                  <div className="text-muted-foreground">
-                    · {toolCallCount} tool calls
-                  </div>
-                )}
+        {toolCallCount > 0 && (
+          <div className="px-4 py-3">
+            <button
+              onClick={() => toggleSection("technical")}
+              className="flex items-center gap-2 w-full text-left hover:opacity-75 transition-opacity mb-2"
+            >
+              {expandedSections.has("technical") ? (
+                <ChevronDown className="w-4 h-4 shrink-0 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="w-4 h-4 shrink-0 text-muted-foreground" />
+              )}
+              <p className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+                Technical Details ({toolCallCount} tools)
+              </p>
+            </button>
+            {expandedSections.has("technical") && (
+              <div className="space-y-1.5 ml-6 mt-2 text-xs text-muted-foreground">
+                Tool calls displayed below
               </div>
             )}
           </div>
