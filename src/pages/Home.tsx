@@ -1241,7 +1241,7 @@ export function Home() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <StatusBadge status={studioStatus} />
+          <StatusBadge status={studioStatus} gameInfo={gameInfo} />
           <div className="h-4 w-px bg-border mx-1" />
           {/* Folder Picker */}
           <Button

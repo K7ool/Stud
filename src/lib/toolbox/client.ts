@@ -18,10 +18,10 @@ export async function searchToolbox(
     return (matched.length > 0 ? matched : POPULAR_ASSETS.slice(0, 12)).map((m) => ({
       id: m.id,
       name: m.name,
+      type: m.category as AssetType,
       creatorName: m.creator,
       creatorId: 1,
       price: 0,
-      assetType: m.category,
       thumbnailUrl: `https://assetdelivery.roblox.com/v1/asset/?id=${m.id}`,
     }));
   };
