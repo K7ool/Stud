@@ -514,9 +514,9 @@ local function parseValue(value, property)
 	if n and not string.match(value, "^%a") then return n end
 	local triplet = string.match(value, "^([%-%d%.]+),%s*([%-%d%.]+),%s*([%-%d%.]+)$")
 	if triplet then
-		local _, mid = string.match(value, "^([%-%d%.]+),%s*([%-%d%.]+),%s*([%-%d%.]+)$")
-		local a = tonumber(triplet), b = tonumber(string.match(value, "^([%-%d%.]+),%s*([%-%d%.]+)")),
-		local c = tonumber(mid)
+		local a = tonumber(triplet)
+		local b = tonumber(string.match(value, "^([%-%d%.]+),%s*([%-%d%.]+)"))
+		local c = tonumber(string.match(value, ",%s*([%-%d%.]+),%s*([%-%d%.]+)$"))
 		if a and b and c then
 			if property and string.find(property, "Color") and a >= 0 and a <= 255 and b >= 0 and b <= 255 and c >= 0 and c <= 255 then
 				return Color3.fromRGB(math.floor(a), math.floor(b), math.floor(c))
