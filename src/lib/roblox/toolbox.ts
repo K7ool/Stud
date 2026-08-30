@@ -1,10 +1,12 @@
 /**
  * Roblox Toolbox API Client
  *
- * Uses Roblox APIs to search and retrieve free models from Creator Store
+ * Unified client that works in both web mode (via edge proxy) and
+ * Tauri/desktop mode (direct Roblox APIs).
  */
 
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+const isWebMode =
+  typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
 
 export interface ToolboxAsset {
   id: number;
@@ -23,12 +25,72 @@ export interface ToolboxSearchResult {
   nextPageCursor?: string;
 }
 
-// Use the details endpoint which returns full asset info
-const CATALOG_SEARCH_API = "https://catalog.roblox.com/v1/search/items";
-const CATALOG_DETAILS_API = "https://catalog.roblox.com/v1/search/items/details";
-const THUMBNAILS_API = "https://thumbnails.roblox.com/v1/assets";
-
 export type AssetCategory = "Model" | "Decal" | "Audio" | "Plugin" | "MeshPart";
+
+// ---------------------------------------------------------------------------
+// Web mode: uses the edge proxy (/api/toolbox/search)
+// ---------------------------------------------------------------------------
+async function webSearchToolbox(
+  query: string,
+  category: AssetCategory,
+  limit: number
+): Promise<ToolboxSearchResult> {
+  const url = `/api/toolbox/search?q=${encodeURIComponent(query)}&type=${encodeURIComponent(category)}&limit=${limit}`;
+  const res = await fetch(url);
+  if (!res.ok) return { assets: [] };
+  const data = (await res.json()) as {
+    results: Array<{
+      id: number;
+      name: string;
+      thumbnailUrl?: string;
+      creatorName?: string;
+      creatorId?: number;
+      price?: number | null;
+      assetType?: string;
+    }>;
+  };
+  const assets: ToolboxAsset[] = (data.results ?? []).map((r) => ({
+    id: r.id,
+    name: r.name,
+    description: "",
+    creatorName: r.creatorName ?? "Unknown",
+    creatorId: r.creatorId ?? 0,
+    thumbnailUrl: r.thumbnailUrl,
+    favoriteCount: 0,
+    created: "",
+    updated: "",
+  }));
+  return { assets };
+}
+
+async function webGetAssetDetails(assetId: number): Promise<ToolboxAsset | null> {
+  const res = await fetch(`/api/toolbox/assets/${assetId}`);
+  if (!res.ok) return null;
+  const data = (await res.json()) as { asset?: ToolboxAsset; error?: string };
+  return data.asset ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Tauri/desktop mode: direct Roblox API calls
+// ---------------------------------------------------------------------------
+
+type FetchFn = typeof fetch;
+let _fetch: FetchFn | null = null;
+
+async function getFetch(): Promise<FetchFn> {
+  if (_fetch) return _fetch;
+  if (isWebMode) {
+    _fetch = fetch;
+  } else {
+    const mod = await import("@tauri-apps/plugin-http");
+    _fetch = (mod.fetch as FetchFn).bind(globalThis);
+  }
+  return _fetch;
+}
+
+const CATALOG_DETAILS_API = "https://catalog.roblox.com/v1/search/items/details";
+const CATALOG_SEARCH_API = "https://catalog.roblox.com/v1/search/items";
+const THUMBNAILS_API = "https://thumbnails.roblox.com/v1/assets";
 
 const CATEGORY_TO_TYPE: Record<AssetCategory, number> = {
   Model: 10,
@@ -38,64 +100,48 @@ const CATEGORY_TO_TYPE: Record<AssetCategory, number> = {
   MeshPart: 40,
 };
 
-export async function searchToolbox(
+async function tauriSearchToolbox(
   query: string,
-  category: AssetCategory = "Model",
-  limit = 10
+  category: AssetCategory,
+  limit: number
 ): Promise<ToolboxSearchResult> {
+  const fn = await getFetch();
   const assetType = CATEGORY_TO_TYPE[category];
-
-  // Use the details endpoint which returns name, creator, etc.
   const params = new URLSearchParams({
-    Category: "1", // Marketplace category
+    Category: "1",
     Keyword: query,
     AssetType: assetType.toString(),
     Limit: limit.toString(),
-    SortType: "0", // Relevance
+    SortType: "0",
     SortAggregation: "3",
-    SortOrder: "2", // Descending
+    SortOrder: "2",
     IncludeNotForSale: "false",
   });
 
-  console.log("[Toolbox] Searching:", query, "category:", category);
-
-  const response = await tauriFetch(`${CATALOG_DETAILS_API}?${params}`, {
+  const response = await fn(`${CATALOG_DETAILS_API}?${params}`, {
     method: "GET",
-    headers: {
-      "User-Agent": "Stud/1.0",
-      "Accept": "application/json",
-    },
+    headers: { "User-Agent": "Stud/1.0", Accept: "application/json" },
   });
 
   if (!response.ok) {
-    console.error("[Toolbox] Search failed:", response.status);
-    // Fallback to alternate search
-    return searchToolboxFallback(query, category, limit);
+    return tauriSearchFallback(query, category, limit, fn);
   }
 
   const rawData = await response.json();
-  console.log("[Toolbox] Raw response:", JSON.stringify(rawData, null, 2).slice(0, 2000));
-
-  // Parse the response - details endpoint returns more info
   const data = rawData as {
     data?: Array<{
       id: number;
-      itemType?: string;
-      assetType?: number;
       name?: string;
       description?: string;
       creatorName?: string;
-      creatorType?: string;
       creatorTargetId?: number;
-      price?: number;
       favoriteCount?: number;
     }>;
     nextPageCursor?: string;
   };
 
   if (!data.data || !Array.isArray(data.data)) {
-    console.error("[Toolbox] Unexpected response format, trying fallback");
-    return searchToolboxFallback(query, category, limit);
+    return tauriSearchFallback(query, category, limit, fn);
   }
 
   const assets: ToolboxAsset[] = data.data.map((item) => ({
@@ -109,34 +155,23 @@ export async function searchToolbox(
     updated: "",
   }));
 
-  console.log("[Toolbox] Parsed assets:", assets.map(a => ({ id: a.id, name: a.name, creator: a.creatorName })));
-
-  // Fetch thumbnails for the assets
   if (assets.length > 0) {
-    try {
-      const thumbnails = await fetchThumbnails(assets.map((a) => a.id));
-      assets.forEach((asset) => {
-        asset.thumbnailUrl = thumbnails[asset.id];
-      });
-    } catch (err) {
-      console.error("[Toolbox] Thumbnail fetch error:", err);
-    }
+    const thumbs = await tauriFetchThumbnails(assets.map((a) => a.id), fn);
+    assets.forEach((a) => {
+      a.thumbnailUrl = thumbs[a.id];
+    });
   }
 
-  return {
-    assets,
-    nextPageCursor: data.nextPageCursor,
-  };
+  return { assets, nextPageCursor: data.nextPageCursor };
 }
 
-// Fallback: Search for IDs first, then fetch details individually
-async function searchToolboxFallback(
+async function tauriSearchFallback(
   query: string,
-  category: AssetCategory = "Model",
-  limit = 10
+  category: AssetCategory,
+  limit: number,
+  fn: FetchFn
 ): Promise<ToolboxSearchResult> {
   const assetType = CATEGORY_TO_TYPE[category];
-
   const params = new URLSearchParams({
     keyword: query,
     assetType: assetType.toString(),
@@ -145,120 +180,130 @@ async function searchToolboxFallback(
     sortOrder: "Desc",
   });
 
-  console.log("[Toolbox] Using fallback search...");
-
-  const response = await tauriFetch(`${CATALOG_SEARCH_API}?${params}`, {
+  const response = await fn(`${CATALOG_SEARCH_API}?${params}`, {
     method: "GET",
-    headers: {
-      "User-Agent": "Stud/1.0",
-    },
+    headers: { "User-Agent": "Stud/1.0" },
   });
-
-  if (!response.ok) {
-    throw new Error(`Toolbox search failed: ${response.status}`);
-  }
+  if (!response.ok) return { assets: [] };
 
   const rawData = await response.json();
-  const data = rawData as {
-    data?: Array<{ id: number }>;
-    nextPageCursor?: string;
-  };
+  const data = rawData as { data?: Array<{ id: number }> };
+  if (!data.data) return { assets: [] };
 
-  if (!data.data || !Array.isArray(data.data)) {
-    return { assets: [] };
-  }
-
-  // Fetch details for each asset
-  const assetIds = data.data.map(item => item.id);
   const assets: ToolboxAsset[] = [];
-
-  // Batch fetch details using economy API
-  for (const id of assetIds.slice(0, limit)) {
-    const details = await getAssetDetails(id);
-    if (details) {
-      assets.push(details);
-    }
+  for (const item of data.data.slice(0, limit)) {
+    const details = await tauriGetAssetDetails(item.id, fn);
+    if (details) assets.push(details);
   }
-
-  return {
-    assets,
-    nextPageCursor: data.nextPageCursor,
-  };
+  return { assets };
 }
 
-async function fetchThumbnails(assetIds: number[]): Promise<Record<number, string>> {
+async function tauriFetchThumbnails(
+  assetIds: number[],
+  fn: FetchFn
+): Promise<Record<number, string>> {
+  if (assetIds.length === 0) return {};
   const params = new URLSearchParams({
     assetIds: assetIds.join(","),
     size: "150x150",
     format: "Png",
     isCircular: "false",
   });
-
-  const response = await tauriFetch(`${THUMBNAILS_API}?${params}`, {
+  const response = await fn(`${THUMBNAILS_API}?${params}`, {
     method: "GET",
-    headers: {
-      "User-Agent": "Stud/1.0",
-    },
+    headers: { "User-Agent": "Stud/1.0" },
   });
-
-  if (!response.ok) {
-    return {};
-  }
-
-  const data = await response.json() as {
-    data: Array<{
-      targetId: number;
-      imageUrl: string;
-      state: string;
-    }>;
+  if (!response.ok) return {};
+  const data = (await response.json()) as {
+    data: Array<{ targetId: number; imageUrl: string; state: string }>;
   };
-
-  const result: Record<number, string> = {};
+  const out: Record<number, string> = {};
   data.data.forEach((item) => {
-    if (item.state === "Completed" && item.imageUrl) {
-      result[item.targetId] = item.imageUrl;
-    }
+    if (item.state === "Completed" && item.imageUrl) out[item.targetId] = item.imageUrl;
   });
-
-  return result;
+  return out;
 }
 
-export async function getAssetDetails(assetId: number): Promise<ToolboxAsset | null> {
-  const response = await tauriFetch(
-    `https://economy.roblox.com/v2/assets/${assetId}/details`,
-    {
+async function tauriGetAssetDetails(
+  assetId: number,
+  fn: FetchFn
+): Promise<ToolboxAsset | null> {
+  const [ecoRes, thumbRes] = await Promise.allSettled([
+    fn(`https://economy.roblox.com/v2/assets/${assetId}/details`, {
       method: "GET",
-      headers: {
-        "User-Agent": "Stud/1.0",
-      },
-    }
-  );
+      headers: { "User-Agent": "Stud/1.0" },
+    }),
+    fn(
+      `https://thumbnails.roblox.com/v1/batch?assetIds=${assetId}&size=150x150&format=Png&isCircular=false`,
+      { headers: { "User-Agent": "Stud/1.0" } }
+    ),
+  ]);
 
-  if (!response.ok) {
-    return null;
+  let name = `Asset ${assetId}`;
+  let description = "";
+  let creatorName = "Unknown";
+  let creatorId = 0;
+  let favoriteCount = 0;
+  let created = "";
+  let updated = "";
+
+  if (ecoRes.status === "fulfilled" && ecoRes.value.ok) {
+    try {
+      const eco = (await ecoRes.value.json()) as {
+        Name?: string;
+        Description?: string;
+        Creator?: { Name?: string; Id?: number };
+        Created?: string;
+        Updated?: string;
+        FavoriteCount?: number;
+      };
+      name = eco.Name ?? name;
+      description = eco.Description ?? "";
+      creatorName = eco.Creator?.Name ?? creatorName;
+      creatorId = eco.Creator?.Id ?? creatorId;
+      favoriteCount = eco.FavoriteCount ?? 0;
+      created = eco.Created ?? "";
+      updated = eco.Updated ?? "";
+    } catch {
+      /* ignore */
+    }
   }
 
-  const data = await response.json() as {
-    AssetId: number;
-    Name: string;
-    Description: string;
-    Creator: { Name: string; Id: number };
-    Created: string;
-    Updated: string;
-    FavoriteCount: number;
-  };
+  let thumbnailUrl: string | undefined;
+  if (thumbRes.status === "fulfilled" && thumbRes.value.ok) {
+    try {
+      const thumb = (await thumbRes.value.json()) as {
+        data?: Array<{ targetId: number; imageUrl?: string }>;
+      };
+      thumbnailUrl = thumb.data?.find((d) => d.targetId === assetId)?.imageUrl;
+    } catch {
+      /* ignore */
+    }
+  }
 
-  const thumbnails = await fetchThumbnails([assetId]);
+  return { id: assetId, name, description, creatorName, creatorId, thumbnailUrl, favoriteCount, created, updated };
+}
 
-  return {
-    id: data.AssetId,
-    name: data.Name,
-    description: data.Description || "",
-    creatorName: data.Creator.Name,
-    creatorId: data.Creator.Id,
-    favoriteCount: data.FavoriteCount || 0,
-    created: data.Created,
-    updated: data.Updated,
-    thumbnailUrl: thumbnails[assetId],
-  };
+// ---------------------------------------------------------------------------
+// Public API — dispatches to web or Tauri based on environment
+// ---------------------------------------------------------------------------
+
+export async function searchToolbox(
+  query: string,
+  category: AssetCategory = "Model",
+  limit = 10
+): Promise<ToolboxSearchResult> {
+  if (isWebMode) {
+    return webSearchToolbox(query, category, limit);
+  }
+  return tauriSearchToolbox(query, category, limit);
+}
+
+export async function getAssetDetails(
+  assetId: number
+): Promise<ToolboxAsset | null> {
+  if (isWebMode) {
+    return webGetAssetDetails(assetId);
+  }
+  return tauriGetAssetDetails(assetId, await getFetch());
 }

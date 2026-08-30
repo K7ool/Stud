@@ -2,6 +2,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Loader } from "./loader";
 import { ChevronDown, ChevronRight, Check, X, Wrench, HelpCircle } from "lucide-react";
+import { ToolboxAssetCard, type ToolboxInsertResult } from "@/components/chat/ToolboxAssetCard";
 
 export interface ToolCallProps {
   name: string;
@@ -107,6 +108,15 @@ export function ToolCall({
       {/* Expanded content */}
       {isExpanded && (
         <div className="px-4 pb-4 pt-0 space-y-3">
+          {/* Rich card for toolbox insertion results */}
+          {status === "complete" &&
+           name === "roblox_insert_asset" &&
+           output != null &&
+           typeof output === "object" &&
+           (output as Record<string, unknown>).success !== undefined && (
+            <ToolboxAssetCard result={output as ToolboxInsertResult} />
+          )}
+
           {/* Input */}
           {input && Object.keys(input).length > 0 && (
             <div className="space-y-1.5">

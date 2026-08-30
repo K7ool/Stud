@@ -552,43 +552,50 @@ Example: Make all parts red and anchored
 // ============================================================================
 
 export const robloxToolboxSearch = tool({
-  description: `Search the Roblox Creator Store for free models, decals, audio, or plugins.
+  description: `Search the Roblox Creator Store for free models, decals, audio, plugins, or meshes.
 
-Use this to find pre-made assets that can be inserted into the game.
-Returns a list of assets with names, descriptions, creators, IDs, and THUMBNAIL URLs.
+Use this when the user wants to FIND something in the Roblox Toolbox to insert into their game.
+Returns a list of assets with names, creators, thumbnail images, and IDs.
 
-IMPORTANT: When presenting search results to the user via roblox_ask_user:
-- Use RICH OPTIONS with imageUrl for thumbnails (shows a visual grid)
-- Format: { label: "Model Name", value: "assetId", imageUrl: "thumbnailUrl", description: "by Creator" }
-- After user picks, use the value (asset ID) with roblox_insert_asset
+IMPORTANT - When showing results:
+- ALWAYS use roblox_ask_user with type:"single" or type:"multi" to let the user visually pick
+- Format each option as: { label: "Asset Name", value: "assetId", imageUrl: "thumbnailUrl", description: "by CreatorName" }
+- Show ALL results (up to limit) as options — do NOT filter or summarize
+- Append two extra options: "Search again" (rerun with same query) and "Let AI pick" (auto-select the best match)
+- After the user picks, call roblox_insert_asset with the selected assetId
 
-Examples:
-- Search for "car" models
-- Search for "sword" audio
-- Search for "explosion" decals`,
+Examples of when to search:
+- "Add a sword to my game" → search "sword" in Models
+- "I need some background music" → search "ambient" in Audio
+- "Find a car model" → search "car" in Models`,
   inputSchema: z.object({
-    query: z.string().describe("Search query"),
-    category: z.enum(["Model", "Decal", "Audio", "Plugin", "MeshPart"]).default("Model").describe("Asset category"),
-    limit: z.number().default(10).describe("Max results (1-50)"),
+    query: z.string().describe("Natural language search query for what to find"),
+    category: z.enum(["Model", "Decal", "Audio", "Plugin", "MeshPart"]).default("Model").describe("Asset category to search in"),
+    limit: z.number().default(10).describe("Max results to return (1-50)"),
   }),
   execute: async ({ query, category = "Model", limit = 10 }: { query: string; category?: AssetCategory; limit?: number }) => {
-    const result = await searchToolbox(query, category, Math.min(limit, 50));
+    const safeLimit = Math.max(1, Math.min(limit, 50));
+    const result = await searchToolbox(query, category, safeLimit);
 
     if (result.assets.length === 0) {
-      return { message: `No ${category.toLowerCase()}s found for "${query}"`, results: [] };
+      return {
+        message: `No ${category.toLowerCase()}s found for "${query}". Try a different keyword or category.`,
+        results: [],
+        query,
+        category,
+      };
     }
 
     return {
       count: result.assets.length,
-      note: "Use roblox_ask_user with RICH OPTIONS format: { label, value, imageUrl, description } to show thumbnails. The value should be the asset ID.",
+      query,
+      category,
       results: result.assets.map((asset) => ({
         id: asset.id,
         name: asset.name,
-        thumbnailUrl: asset.thumbnailUrl,
-        description: asset.description.slice(0, 100),
+        description: asset.description?.slice(0, 120) ?? "",
         creator: asset.creatorName,
-        favorites: asset.favoriteCount,
-        // Pre-formatted for ask_user rich options
+        thumbnailUrl: asset.thumbnailUrl,
         askUserOption: {
           label: asset.name,
           value: String(asset.id),
@@ -601,42 +608,225 @@ Examples:
 });
 
 export const robloxInsertAsset = tool({
-  description: `Insert a free model from the Roblox Creator Store into the game.
+  description: `Insert a free Roblox Creator Store asset (model, decal, audio, etc.) into the user's game.
 
-Use the asset ID from toolbox search results.
-The model will be inserted as a child of the specified parent.
+This is the primary way to add pre-made content to a Roblox game.
+The asset will be loaded by the Roblox Studio plugin and inserted into the game.
 
-Note: Only free models can be inserted. Some models may contain scripts.`,
+Workflow:
+1. Use roblox_toolbox_search to find assets first
+2. Ask the user to pick one (roblox_ask_user) or pick automatically if the request is clear
+3. Call roblox_insert_asset with the chosen assetId
+4. The result will include a verification status — if verified=true the asset is confirmed in Studio
+5. Report the success to the user with the asset name and where it was placed
+
+Note: Only free assets can be inserted. Some models contain scripts (use caution in Studio).`,
   inputSchema: z.object({
-    assetId: z.number().describe("Asset ID from toolbox search"),
-    parent: z.string().default("game.Workspace").describe("Parent path for the inserted model"),
+    assetId: z.number().describe("The Roblox asset ID (from toolbox search results)"),
+    parent: z.string().default("game.Workspace").describe("The parent path where to insert the asset"),
   }),
   execute: async ({ assetId, parent = "game.Workspace" }: { assetId: number; parent?: string }) => {
-    if (!(await isStudioConnected())) {
+    const connected = await isStudioConnected();
+    if (!connected) {
       return { error: notConnectedError() };
     }
 
-    // Get asset details first
     const details = await getAssetDetails(assetId);
     if (!details) {
-      return { error: `Could not find asset with ID ${assetId}` };
+      return { error: `Could not look up asset ID ${assetId}. It may not exist or may not be accessible.` };
     }
 
-    // Request Studio to insert the asset
-    const result = await studioRequest<{ path: string; name: string }>("/asset/insert", {
+    const insertResult = await studioRequest<{ path: string; name: string }>("/asset/insert", {
       assetId,
-      parent,
+      parentPath: parent,
     });
 
-    if (!result.success) {
-      return { error: result.error };
+    if (!insertResult.success) {
+      return {
+        error: `Insertion failed: ${insertResult.error}`,
+        assetId,
+        assetName: details.name,
+      };
+    }
+
+    // Verify the asset was actually inserted by searching for it
+    let verified = false;
+    let foundPath: string | null = null;
+
+    try {
+      const searchResult = await studioRequest<Array<{ path: string; name: string; className: string }>>("/instance/search", {
+        root: parent,
+        name: details.name,
+        limit: 5,
+      });
+
+      if (searchResult.success && searchResult.data.length > 0) {
+        // Find the closest match
+        const match = searchResult.data.find(
+          (i) => i.name === details.name || i.path === insertResult.data.path
+        ) ?? searchResult.data[0];
+        foundPath = match.path;
+        verified = true;
+      }
+    } catch {
+      // Verification is best-effort; don't fail the whole operation
     }
 
     return {
       success: true,
-      path: result.data.path,
-      name: result.data.name,
+      verified,
+      assetId,
       assetName: details.name,
+      creator: details.creatorName,
+      thumbnailUrl: details.thumbnailUrl,
+      path: insertResult.data.path,
+      foundPath,
+      parent,
+      message: verified
+        ? `Successfully inserted "${details.name}" into ${parent}. Verified at ${foundPath}.`
+        : `Insertion command sent for "${details.name}" into ${parent}. Path: ${insertResult.data.path}`,
+    };
+  },
+});
+
+export const robloxToolboxGetAsset = tool({
+  description: `Get full details for a specific Roblox asset by its ID.
+
+Returns: name, description, creator info, creation date, favorite count, and thumbnail.
+Use this after the user has selected an asset to confirm what it is before inserting.`,
+  inputSchema: z.object({
+    assetId: z.number().describe("The Roblox asset ID"),
+  }),
+  execute: async ({ assetId }: { assetId: number }) => {
+    const details = await getAssetDetails(assetId);
+    if (!details) {
+      return { error: `Could not find asset with ID ${assetId}. Check the ID and try again.` };
+    }
+    return {
+      id: details.id,
+      name: details.name,
+      description: details.description,
+      creator: {
+        name: details.creatorName,
+        id: details.creatorId,
+      },
+      thumbnailUrl: details.thumbnailUrl,
+      favoriteCount: details.favoriteCount,
+      created: details.created,
+      updated: details.updated,
+    };
+  },
+});
+
+export const robloxToolboxRemove = tool({
+  description: `Remove a previously inserted Roblox asset from the game.
+
+Provide either the exact path (e.g. "Workspace.Sword") OR the asset name plus the parent path.
+The plugin will find and delete the instance. Only one instance will be deleted.
+
+Use this when the user wants to undo a toolbox insertion or remove unwanted content.`,
+  inputSchema: z.object({
+    path: z.string().optional().describe("Exact instance path (e.g. Workspace.FuturisticSword)"),
+    name: z.string().optional().describe("Instance name to search for"),
+    parent: z.string().default("game.Workspace").describe("Parent path to search within"),
+  }),
+  execute: async ({ path, name, parent = "game.Workspace" }: { path?: string; name?: string; parent?: string }) => {
+    const connected = await isStudioConnected();
+    if (!connected) {
+      return { error: notConnectedError() };
+    }
+
+    let targetPath = path;
+
+    if (!targetPath && name) {
+      // Find the instance first
+      const searchResult = await studioRequest<Array<{ path: string; name: string }>>("/instance/search", {
+        root: parent,
+        name,
+        limit: 5,
+      });
+
+      if (!searchResult.success || searchResult.data.length === 0) {
+        return { error: `Could not find an instance named "${name}" in ${parent}` };
+      }
+
+      targetPath = searchResult.data[0].path;
+    }
+
+    if (!targetPath) {
+      return { error: "Must provide either path or name to remove." };
+    }
+
+    const result = await studioRequest<{ deleted: boolean }>("/instance/delete", {
+      path: targetPath,
+    });
+
+    if (!result.success) {
+      return { error: `Failed to remove ${targetPath}: ${result.error}` };
+    }
+
+    return {
+      success: true,
+      path: targetPath,
+      message: `Successfully removed ${targetPath} from the game.`,
+    };
+  },
+});
+
+export const robloxToolboxInspect = tool({
+  description: `Verify that a Roblox asset or instance exists in the game.
+
+Use this AFTER roblox_insert_asset to confirm the asset was actually placed in Studio.
+Returns the instance path, name, class, and immediate children if it's a Model.
+
+This is the verification step — always check the result.verified field in the response.`,
+  inputSchema: z.object({
+    path: z.string().describe("The full instance path to verify (e.g. game.Workspace.Sword)"),
+    includeChildren: z.boolean().default(false).describe("Whether to include immediate child instances"),
+  }),
+  execute: async ({ path, includeChildren = false }: { path: string; includeChildren?: boolean }) => {
+    const connected = await isStudioConnected();
+    if (!connected) {
+      return { error: notConnectedError() };
+    }
+
+    // Extract the root and name from the path
+    const parts = path.split(".");
+    if (parts.length < 2) {
+      return { error: "Invalid path format. Expected something like game.Workspace.MyModel" };
+    }
+
+    const name = parts[parts.length - 1];
+    const root = parts.slice(0, -1).join(".");
+
+    const result = await studioRequest<Array<{ path: string; name: string; className: string; children?: Array<{ path: string; name: string; className: string }> }>>("/instance/search", {
+      root: root || "game",
+      name,
+      limit: 5,
+    });
+
+    if (!result.success || result.data.length === 0) {
+      return {
+        found: false,
+        path,
+        message: `Instance not found at path ${path}. It may have been moved, renamed, or deleted.`,
+      };
+    }
+
+    const match = result.data.find((i) => i.path === path) ?? result.data[0];
+    const childrenResult = includeChildren
+      ? await studioRequest<Array<{ path: string; name: string; className: string }>>("/instance/children", {
+          path: match.path,
+        })
+      : null;
+
+    return {
+      found: true,
+      path: match.path,
+      name: match.name,
+      className: match.className,
+      children: childrenResult?.success ? childrenResult.data : undefined,
+      message: `Found ${match.name} (${match.className}) at ${match.path}`,
     };
   },
 });
@@ -1214,9 +1404,12 @@ export const robloxTools = {
   roblox_bulk_delete: robloxBulkDelete,
   roblox_bulk_set_property: robloxBulkSetProperty,
 
-  // Toolbox tools (existing — handles both search and insert)
+  // Toolbox tools
   roblox_toolbox_search: robloxToolboxSearch,
   roblox_insert_asset: robloxInsertAsset,
+  roblox_toolbox_get_asset: robloxToolboxGetAsset,
+  roblox_toolbox_remove: robloxToolboxRemove,
+  roblox_toolbox_inspect: robloxToolboxInspect,
 
   // Agentic tools
   roblox_ask_user: robloxAskUser,
