@@ -795,6 +795,16 @@ handlers["/instance/bulk-create"] = function(data)
 		if not parent then
 			table.insert(skipped, { item = item, reason = "Parent not found" })
 		else
+			local name = item.name or ("New" .. item.className)
+			-- Deduplication: for scripts, reuse an existing instance with the
+			-- same name+class so repeated creates don't leave duplicates.
+			if SCRIPT_TYPES[item.className] then
+				local existing = findExistingInstance(parent, name, item.className)
+				if existing then
+					table.insert(created, getInstancePath(existing))
+					continue
+				end
+			end
 			local ok, instance = pcall(Instance.new, item.className)
 			if not ok or not instance then
 				table.insert(skipped, { item = item, reason = "Invalid className" })

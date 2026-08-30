@@ -38,10 +38,15 @@ interface PropertyInfo {
 // ============================================================================
 
 export const robloxGetScript = tool({
-  description: `Read the source code of a script in Roblox Studio.
+  description: `Read the source code of a script in Roblox Studio. MEDIUM latency (1 Studio round-trip).
 
-Use this to read scripts like ServerScriptService.MainScript or Workspace.Part.LocalScript.
-The path should be the full instance path from game root.
+USE ONLY WHEN the user's task requires understanding or modifying the CONTENTS of a specific script
+(e.g. "explain this script", "fix this script", "what does this script do"). The path must be the
+full instance path from game root.
+
+DO NOT USE for ordinary instance/property operations, creating parts, renaming, or any task that does
+not need script source. Do not fetch the same script twice in a row - reuse content already in context.
+Prefer cached script content when available.
 
 Examples:
 - game.ServerScriptService.MainScript
@@ -138,18 +143,22 @@ Example:
 // ============================================================================
 
 export const robloxGetChildren = tool({
-  description: `List the children of an instance in Roblox Studio.
+  description: `List the children of an instance in Roblox Studio. MEDIUM latency.
 
-Use this to explore the game hierarchy.
-Set recursive=true to get all descendants (can be slow for large trees).
+Use ONLY to discover the immediate structure of a SPECIFIC container you need for the task (e.g. "list
+what's in Workspace.Items" before placing an object). 
+
+DO NOT recursively scan the entire game unless the user explicitly asks for a full analysis / game map /
+project audit. Avoid recursive=true on large containers (Workspace, ReplicatedStorage) unless required.
+If you only need to find whether a specific child exists, prefer roblox_search (lighter).
 
 Examples:
-- game.Workspace
+- game.Workspace - only when you need to see what's at the top level
 - game.ServerScriptService
 - game.Players.Player1.Backpack`,
   inputSchema: z.object({
     path: z.string().describe("Full instance path (e.g. game.Workspace)"),
-    recursive: z.boolean().optional().describe("If true, get all descendants recursively"),
+    recursive: z.boolean().optional().describe("If true, get all descendants recursively (SLOW for large trees - avoid unless needed)"),
   }),
   execute: async ({ path, recursive = false }: { path: string; recursive?: boolean }) => {
     if (!(await isStudioConnected())) {
@@ -179,10 +188,14 @@ Examples:
 })
 
 export const robloxGetProperties = tool({
-  description: `Get all properties of an instance in Roblox Studio.
+  description: `Get selected properties of an instance in Roblox Studio. MEDIUM latency (1 Studio round-trip).
 
-Returns a list of property names, values, and types.
-Useful for understanding what can be modified on an instance.`,
+USE ONLY WHEN you need specific property VALUES (position, size, color, anchored, etc.) that are not
+already known. Do NOT use it just because the task involves Roblox.
+
+AVOID: reading properties speculatively, re-reading properties you already have in context, or fetching
+properties for objects unrelated to the task. If the user just wants to RENAME or DELETE something, you
+do not need properties - use the direct operation instead.`,
   inputSchema: z.object({
     path: z.string().describe("Full instance path"),
   }),
@@ -353,10 +366,10 @@ Name matching is case-insensitive and supports partial matches.`,
 })
 
 export const robloxGetSelection = tool({
-  description: `Get the currently selected objects in Roblox Studio.
+  description: `Get the currently selected objects in Roblox Studio. LOW-MEDIUM latency.
 
-Returns the paths and class names of all selected instances.
-Useful for operating on what the user has selected in the Explorer.`,
+USE ONLY when the task depends on what the user has selected in the Explorer (e.g. they say "do it to
+the selected object"). Do NOT query selection for tasks that give an explicit path/name.`,
   inputSchema: z.object({}),
   execute: async () => {
     if (!(await isStudioConnected())) {
@@ -380,15 +393,25 @@ Useful for operating on what the user has selected in the Explorer.`,
 })
 
 export const robloxRunCode = tool({
-  description: `Execute Luau code in Roblox Studio.
+  description: `Execute Luau code in Roblox Studio. HIGH latency fallback - use as LAST RESORT.
 
-The code runs in the command bar context with full access to game services.
-Use print() to output results - they will be captured and returned.
+USE ONLY when NO structured tool can perform the operation, or when arbitrary Luau logic is genuinely
+required (complex computation, computation only expressible in Luau). 
+
+NEVER use for operations that have a direct structured tool:
+- Create a part/instance  -> use roblox_create or roblox_bulk_create
+- Set a property          -> use roblox_set_property or roblox_bulk_set_property
+- List/inspect children   -> use roblox_get_children
+- Search for instances    -> use roblox_search
+- Move an instance        -> use roblox_move
+
+Do NOT use Run Code just to inspect the game or to "check" things. Only for genuinely arbitrary logic
+that no structured tool covers. The code runs in the command bar context with full access to game
+services. Use print() to output results - they will be captured and returned.
 
 Examples:
-- print(game.Workspace:GetChildren())
-- game.Players.LocalPlayer.Character:MoveTo(Vector3.new(0, 10, 0))
-- for _, part in game.Workspace:GetDescendants() do if part:IsA("BasePart") then part.Anchored = true end end`,
+- perform(complex math that no structured tool supports)
+- a one-off scripted traversal that no single structured tool provides`,
   inputSchema: z.object({
     code: z.string().describe("Luau code to execute"),
   }),
@@ -851,11 +874,26 @@ This is the verification step — always check the result.verified field in the 
 // Game Info Tool
 // ============================================================================
 
-export const robloxGetGameInfo = tool({
-  description: `Get information about the currently open Roblox game in Studio.
+export const robloxConnectionStatus = tool({
+  description: `Check whether Roblox Studio is connected. LOWEST latency (fast, cached).
 
-Returns the game name, place ID, universe ID, version, creator info, player count, and description.
-Use this to understand what game is currently open before making changes.`,
+USE FIRST for any question like "is Studio connected?", "can you reach Studio?", "are your tools
+available?". Do NOT call inspection tools (get_script, get_properties, get_children, run_code,
+game_info) to answer a connection question - this single fast check is all that is needed.`,
+  inputSchema: z.object({}),
+  execute: async () => {
+    const connected = await isStudioConnected();
+    return { connected, status: connected ? "connected" : "disconnected" };
+  },
+})
+
+export const robloxGetGameInfo = tool({
+  description: `Get info about the currently open Roblox game in Studio: name, place/universe ID, creator, version.
+MEDIUM latency (Studio round-trip).
+
+USE ONLY when the user asks about the current project/game identity (name, place ID, "what game is
+open?") or you genuinely need that metadata. Do NOT call this as a preamble for unrelated tasks, and do
+NOT call it repeatedly within one task - use the result once.`,
   inputSchema: z.object({}),
   execute: async () => {
     const connected = await isStudioConnected();
@@ -1568,6 +1606,7 @@ export const robloxTools = {
   roblox_get_selection: robloxGetSelection,
   roblox_run_code: robloxRunCode,
   roblox_move: robloxMove,
+  roblox_connection_status: robloxConnectionStatus,
 
   // Bulk tools
   roblox_bulk_create: robloxBulkCreate,

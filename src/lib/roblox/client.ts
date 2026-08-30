@@ -159,6 +159,9 @@ async function studioRequestViaLocal<T>(
   }
 }
 
+let _connState: { connected: boolean; at: number } | null = null;
+const CONN_TTL_MS = 1_500;
+
 export async function isStudioConnected(): Promise<boolean> {
   if (isWebMode) {
     // We can't know for sure without polling, but assume yes if a siteId
@@ -166,15 +169,27 @@ export async function isStudioConnected(): Promise<boolean> {
     return !!getSiteId();
   }
 
+  // Short-lived cache so bursts of concurrent tool calls do not each pay a
+  // bridge round-trip for a connection that is unlikely to have changed.
+  if (_connState && Date.now() - _connState.at < CONN_TTL_MS) {
+    return _connState.connected;
+  }
+
   try {
     const response = await fetch(`${BRIDGE_URL}/stud/status`, {
       method: "GET",
       signal: AbortSignal.timeout(1000),
     });
-    if (!response.ok) return false;
+    if (!response.ok) {
+      _connState = { connected: false, at: Date.now() };
+      return false;
+    }
     const status = await response.json();
-    return status.connected === true;
+    const connected = status.connected === true;
+    _connState = { connected, at: Date.now() };
+    return connected;
   } catch {
+    _connState = { connected: false, at: Date.now() };
     return false;
   }
 }
