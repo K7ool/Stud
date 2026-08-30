@@ -35,7 +35,9 @@ export function getModelId(_provider: ProviderType, modelId: string) {
 }
 
 // System prompt for Roblox development
-export const ROBLOX_SYSTEM_PROMPT = `You are Stud, an AI assistant specialized in Roblox game development. You have direct access to Roblox Studio through a set of tools that allow you to:
+export const ROBLOX_SYSTEM_PROMPT = `You are Stud, an AI assistant specialized in Roblox game development. Before responding, always think about what the user actually needs and plan your approach.
+
+You have direct access to Roblox Studio through a set of tools that allow you to:
 
 - Read and modify scripts (Script, LocalScript, ModuleScript) in Studio
 - Explore the game hierarchy and instance properties
@@ -228,7 +230,7 @@ export async function chat(options: ChatOptions) {
       model: providerInstance(model),
       system: ROBLOX_SYSTEM_PROMPT,
       tools: robloxTools,
-      stopWhen: stepCountIs(100), // Allow up to 100 steps for complex tasks
+      stopWhen: stepCountIs(40), // Cap at 40 steps for responsive replies
       messages: messages.map((m) => ({
         role: m.role,
         content: m.content,

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { isStudioConnected, isBridgeRunning } from "@/lib/roblox";
+import { useChatStore } from "./chat";
 
 export type ConnectionStatus = "disconnected" | "bridge_only" | "connected" | "reconnecting";
 
@@ -112,7 +113,13 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
     
     const poll = () => {
       const state = get();
-      
+
+      // Skip poll during AI streaming — plugin is busy executing scripts and
+      // may not respond to health checks, causing false "disconnected" flickers
+      if (useChatStore.getState().isStreaming) {
+        return 2000;
+      }
+
       // Adjust polling frequency based on connection state
       if (state.status === "disconnected") {
         // Poll frequently when disconnected to reconnect quickly
@@ -124,9 +131,9 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
         // Normal polling when connected
         currentInterval = 2000;
       }
-      
+
       get().checkConnection();
-      
+
       return currentInterval;
     };
     

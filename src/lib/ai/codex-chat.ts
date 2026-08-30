@@ -11,7 +11,7 @@ import { z } from "zod";
 
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 const CODEX_PROXY_ENDPOINT = "/api/codex";
-const MAX_ITERATIONS = 100; // Allow many tool call iterations for complex tasks
+const MAX_ITERATIONS = 40; // Cap iterations for responsive replies
 
 const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
 

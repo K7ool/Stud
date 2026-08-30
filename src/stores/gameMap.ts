@@ -251,7 +251,7 @@ export const useGameMapStore = create<GameMapState>()(
         const provider = settings.selectedProvider;
         const model = settings.selectedModel;
 
-        const apiKey =
+        let apiKey =
           provider === "openai"
             ? settings.getApiKey("openai")
             : provider === "anthropic"
@@ -260,7 +260,25 @@ export const useGameMapStore = create<GameMapState>()(
             ? settings.getApiKey("openrouter")
             : undefined;
 
+        // If codex is selected but no OAuth token, fall back to OpenAI key
+        if (!apiKey && provider === "codex") {
+          const openaiKey = settings.getApiKey("openai");
+          if (openaiKey) {
+            apiKey = openaiKey;
+          }
+        }
+
         if (!apiKey) {
+          const needsKey =
+            provider === "codex"
+              ? "Codex (OAuth)"
+              : provider === "openai"
+              ? "OpenAI"
+              : provider === "anthropic"
+              ? "Anthropic"
+              : provider === "openrouter"
+              ? "OpenRouter"
+              : "the selected provider";
           set((s) => ({
             suggestions: {
               ...s.suggestions,
@@ -268,7 +286,7 @@ export const useGameMapStore = create<GameMapState>()(
                 options: [],
                 loading: false,
                 error:
-                  "No API key for the selected provider. Add one in Settings to get AI suggestions.",
+                  `No API key configured for ${needsKey}. Add one in Settings (API Keys tab) to get AI-powered suggestions.`,
                 fetchedAt: Date.now(),
               },
             },
