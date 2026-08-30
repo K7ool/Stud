@@ -719,7 +719,10 @@ export function Home() {
 
   // Show connection screen if not connected (unless workWithoutStudio is enabled)
   const canWorkOffline = appSettings.workWithoutStudio;
-  if (!isConnected && !canWorkOffline) {
+  const hasPairCode = typeof window !== "undefined"
+    ? !!localStorage.getItem("stud:pairCode")
+    : false;
+  if (!isConnected && !canWorkOffline && !hasPairCode) {
     return <ConnectionScreen status={studioStatus} />;
   }
 
