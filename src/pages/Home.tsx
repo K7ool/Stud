@@ -717,12 +717,14 @@ export function Home() {
     handleSubmit();
   };
 
-  // Show connection screen if not connected (unless workWithoutStudio is enabled)
+  // Show connection screen if not connected (unless workWithoutStudio is enabled
+  // or the user has a pairing code — they're paired or about to be).
   const canWorkOffline = appSettings.workWithoutStudio;
   const hasPairCode = typeof window !== "undefined"
     ? !!localStorage.getItem("stud:pairCode")
     : false;
-  if (!isConnected && !canWorkOffline && !hasPairCode) {
+  const effectiveConnected = isConnected || hasPairCode;
+  if (!effectiveConnected && !canWorkOffline) {
     return <ConnectionScreen status={studioStatus} />;
   }
 
