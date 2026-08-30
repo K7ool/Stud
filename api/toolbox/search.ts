@@ -73,44 +73,141 @@ interface RobloxSearchResult {
   assetType?: string;
 }
 
+const CATEGORY_TO_ASSET_TYPE: Record<string, number> = {
+  Model: 10,
+  Decal: 13,
+  Audio: 3,
+  Plugin: 38,
+  MeshPart: 40,
+  Image: 1,
+  Mesh: 40,
+};
+
 async function searchCreatorStore(
   keyword: string,
   category: string,
   limit: number,
 ): Promise<RobloxSearchResult[]> {
-  const url = new URL("https://apis.roblox.com/toolbox-service/v1/marketplace/search");
-  url.searchParams.set("keyword", keyword);
-  url.searchParams.set("category", category);
-  url.searchParams.set("limit", String(Math.min(limit, 30)));
+  const assetType = CATEGORY_TO_ASSET_TYPE[category] ?? 10;
+  const url = new URL("https://catalog.roblox.com/v1/search/items");
+  url.searchParams.set("Category", "1");
+  url.searchParams.set("Keyword", keyword);
+  url.searchParams.set("AssetType", String(assetType));
+  url.searchParams.set("SortType", "0");
+  url.searchParams.set("SortAggregation", "3");
+  url.searchParams.set("SortOrder", "2");
+  url.searchParams.set("IncludeNotForSale", "false");
+  url.searchParams.set("Limit", String(Math.min(limit, 30)));
 
   const res = await fetch(url.toString(), { headers: ROBLOX_HEADERS });
-  if (!res.ok) return [];
+  if (!res.ok) {
+    console.error("[toolbox-search] catalog search failed:", res.status, await res.text());
+    return [];
+  }
+
   const json = (await res.json()) as {
-    data?: Array<{
-      id: number;
-      name: string;
-      thumbnail?: { url?: string };
-      creator?: { name?: string; id?: number };
-      price?: number | null;
-      assetType?: { name?: string };
-    }>;
+    data?: Array<{ id: number; itemType: string }>;
+    nextPageCursor?: string;
   };
+
   const items = json.data ?? [];
-  return items.map((it) => ({
-    id: it.id,
-    name: it.name,
-    thumbnailUrl: it.thumbnail?.url,
-    creatorName: it.creator?.name,
-    creatorId: it.creator?.id,
-    price: it.price ?? null,
-    assetType: it.assetType?.name,
-  }));
+  if (items.length === 0) return [];
+
+  // Batch-fetch details and thumbnails for the returned IDs
+  const ids = items.map((it) => it.id);
+  const [detailsMap, thumbnailMap] = await Promise.all([
+    fetchAssetDetailsBatch(ids),
+    fetchThumbnailsBatch(ids),
+  ]);
+
+  return ids
+    .map((id) => {
+      const details = detailsMap[id];
+      if (!details) return null;
+      return {
+        id,
+        name: details.name,
+        thumbnailUrl: thumbnailMap[id],
+        creatorName: details.creatorName,
+        creatorId: details.creatorId,
+        price: details.price,
+        assetType: category,
+      };
+    })
+    .filter(Boolean) as RobloxSearchResult[];
+}
+
+async function fetchAssetDetailsBatch(
+  ids: number[]
+): Promise<Record<number, { name: string; creatorName: string; creatorId: number; price: number | null }>> {
+  const results: Record<number, { name: string; creatorName: string; creatorId: number; price: number | null }> = {};
+  // Fetch details for all IDs in parallel (rate-limited batches of 10)
+  for (const batch of chunk(ids, 10)) {
+    await Promise.all(
+      batch.map(async (id) => {
+        try {
+          const res = await fetch(`https://economy.roblox.com/v2/assets/${id}/details`, {
+            headers: ROBLOX_HEADERS,
+          });
+          if (!res.ok) return;
+          const data = (await res.json()) as {
+            Name?: string;
+            Creator?: { Name?: string; Id?: number };
+            PriceInRobux?: number | null;
+          };
+          results[id] = {
+            name: data.Name ?? `Asset ${id}`,
+            creatorName: data.Creator?.Name ?? "Unknown",
+            creatorId: data.Creator?.Id ?? 0,
+            price: data.PriceInRobux ?? null,
+          };
+        } catch {
+          // Non-critical: use minimal data
+          results[id] = { name: `Asset ${id}`, creatorName: "Unknown", creatorId: 0, price: null };
+        }
+      })
+    );
+  }
+  return results;
+}
+
+async function fetchThumbnailsBatch(ids: number[]): Promise<Record<number, string>> {
+  if (ids.length === 0) return {};
+  const url = new URL("https://thumbnails.roblox.com/v1/assets");
+  url.searchParams.set("assetIds", ids.join(","));
+  url.searchParams.set("size", "150x150");
+  url.searchParams.set("format", "Png");
+  url.searchParams.set("isCircular", "false");
+  try {
+    const res = await fetch(url.toString(), { headers: ROBLOX_HEADERS });
+    if (!res.ok) return {};
+    const data = (await res.json()) as {
+      data?: Array<{ targetId: number; imageUrl?: string; state: string }>;
+    };
+    const out: Record<number, string> = {};
+    for (const item of data.data ?? []) {
+      if (item.state === "Completed" && item.imageUrl) {
+        out[item.targetId] = item.imageUrl;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    result.push(arr.slice(i, i + size));
+  }
+  return result;
 }
 
 async function getThumbnails(assetIds: number[]): Promise<Record<number, string>> {
   if (assetIds.length === 0) return {};
   try {
-    const url = new URL("https://thumbnails.roblox.com/v1/batch");
+    const url = new URL("https://thumbnails.roblox.com/v1/assets");
     url.searchParams.set("assetIds", assetIds.join(","));
     url.searchParams.set("size", "150x150");
     url.searchParams.set("format", "Png");

@@ -68,7 +68,7 @@ async function fetchFromRoblox(id: number): Promise<AssetDetails | null> {
       headers: ROBLOX_HEADERS,
     }),
     fetch(
-      `https://thumbnails.roblox.com/v1/batch?assetIds=${id}&size=150x150&format=Png&isCircular=false`,
+      `https://thumbnails.roblox.com/v1/assets?assetIds=${id}&size=150x150&format=Png&isCircular=false`,
       { headers: ROBLOX_HEADERS }
     ),
   ]);
