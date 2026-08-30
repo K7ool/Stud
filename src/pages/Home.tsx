@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, lazy, Suspense } from "react";
 import {
   PromptInput,
   PromptInputTextarea,
@@ -29,7 +29,6 @@ import { ChatActions } from "@/components/QuickActions";
 import { CommandPalette } from "@/components/CommandPalette";
 import { EmptyState } from "@/components/EmptyState";
 import { IntentSuggestions } from "@/components/chat/IntentSuggestions";
-import { GameMap } from "@/components/chat/GameMap";
 import { ConnectionPopup } from "@/components/chat/ConnectionPopup";
 import { detectIntent, parseSlashCommand } from "@/lib/intents";
 import { useChatStore, Attachment } from "@/stores/chat";
@@ -42,9 +41,6 @@ import { useGameMapStore } from "@/stores/gameMap";
 import { useChat } from "@/lib/ai/providers";
 import { setAskUserHandler } from "@/lib/roblox/tools";
 import { getStudioSiteId } from "@/lib/roblox/client";
-import { ToolboxSearch } from "@/components/ToolboxSearch";
-import { AuthModal } from "@/components/auth/AuthModal";
-import { AdminDashboard } from "@/components/admin/AdminDashboard";
 import { autoDetectProject, setProjectPath, pickFolder } from "@/lib/file-ops";
 import { useAppShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { improvePrompt } from "@/lib/ai/prompt-improver";
@@ -58,6 +54,13 @@ import { Maximize2, Shield, User, Coins } from "lucide-react";
 import { ArrowUp, Square, CheckCircle2, Download, FolderOpen, RefreshCw, Box, FileText, Globe, Play, ListTodo, Settings, Sparkles, Paperclip, X, Image, File, MessageSquarePlus, Trash2, Map, Lightbulb, Users } from "lucide-react";
 
 const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
+
+// Heavier panels are code-split and only fetched when first opened, keeping the
+// initial shell lean.
+const GameMap = lazy(() => import("@/components/chat/GameMap").then((m) => ({ default: m.GameMap })));
+const ToolboxSearch = lazy(() => import("@/components/ToolboxSearch").then((m) => ({ default: m.ToolboxSearch })));
+const AuthModal = lazy(() => import("@/components/auth/AuthModal").then((m) => ({ default: m.AuthModal })));
+const AdminDashboard = lazy(() => import("@/components/admin/AdminDashboard").then((m) => ({ default: m.AdminDashboard })));
 
 const SUGGESTIONS = [
   // Gameplay systems
@@ -468,12 +471,21 @@ export function Home() {
   const [dismissConnection, setDismissConnection] = useState(false);
   const [connectionRetrying, setConnectionRetrying] = useState(false);
 
-  const { rootFeature, setRootFeature, addFeature } = useGameMapStore();
+  const rootFeature = useGameMapStore((s) => s.rootFeature);
+  const setRootFeature = useGameMapStore((s) => s.setRootFeature);
+  const addFeature = useGameMapStore((s) => s.addFeature);
   const { appSettings } = useSettingsStore();
 
   const messages = getCurrentMessages();
   const { hasApiKey } = useSettingsStore();
-  const { status: studioStatus, startPolling, gameInfo, fetchGameInfo, checkConnection } = useRobloxStore();
+  // Granular subscriptions so Home only re-renders when these specific values
+  // change, not on every 2-second poll (lastSuccessfulPoll/lastCheck mutate
+  // each poll and would otherwise re-render the whole component constantly).
+  const studioStatus = useRobloxStore((s) => s.status);
+  const gameInfo = useRobloxStore((s) => s.gameInfo);
+  const startPolling = useRobloxStore((s) => s.startPolling);
+  const fetchGameInfo = useRobloxStore((s) => s.fetchGameInfo);
+  const checkConnection = useRobloxStore((s) => s.checkConnection);
   const { sendMessage } = useChat();
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -664,11 +676,21 @@ export function Home() {
       console.log("[Home] Sending", chatMessages.length, "messages to AI");
 
       let fullText = "";
+      // Throttle store updates to once per animation frame instead of once
+      // per token. Re-rendering + markdown parsing + localStorage persist on
+      // every token dominates streaming cost for long responses.
+      let rafId: number | null = null;
+      const flushToken = () => {
+        rafId = null;
+        updateMessage(assistantId, fullText);
+      };
 
       await sendMessage(chatMessages, {
         onToken: (token) => {
           fullText += token;
-          updateMessage(assistantId, fullText);
+          if (rafId === null) {
+            rafId = requestAnimationFrame(flushToken);
+          }
         },
         onToolCall: (toolCall) => {
           console.log("[Home] Tool call received:", toolCall.name);
@@ -774,6 +796,50 @@ export function Home() {
       setConnectionRetrying(false);
     }
   }, [checkConnection]);
+
+  // Shared overlay dialogs rendered in both empty-state and chat-view returns.
+  const renderOverlays = () => (
+    <>
+      {showGameMap && (
+        <Suspense fallback={null}>
+          <GameMap open onOpenChange={setShowGameMap} onSelectSuggestion={handleGameMapSuggestion} />
+        </Suspense>
+      )}
+      {authModalOpen && (
+        <Suspense fallback={null}>
+          <AuthModal
+            open
+            onOpenChange={setAuthModalOpen}
+            onOpenAdmin={() => {
+              setAuthModalOpen(false);
+              setAdminDashboardOpen(true);
+            }}
+          />
+        </Suspense>
+      )}
+      {adminDashboardOpen && (
+        <Suspense fallback={null}>
+          <AdminDashboard open onOpenChange={setAdminDashboardOpen} />
+        </Suspense>
+      )}
+      {toolboxOpen && (
+        <Suspense fallback={null}>
+          <ToolboxSearch
+            open
+            onOpenChange={setToolboxOpen}
+            onInserted={() => setToolboxOpen(false)}
+          />
+        </Suspense>
+      )}
+      <ConnectionPopup
+        open={!isConnected && !dismissConnection}
+        status={studioStatus}
+        retrying={connectionRetrying}
+        onRetry={handleRetryConnection}
+        onDismiss={() => setDismissConnection(true)}
+      />
+    </>
+  );
 
   // Show connection screen if not connected (unless workWithoutStudio is enabled).
   const canWorkOffline = appSettings.workWithoutStudio;
@@ -1131,6 +1197,8 @@ export function Home() {
             )}
           </div>
         </main>
+
+        {renderOverlays()}
       </div>
     );
   }
@@ -1138,7 +1206,6 @@ export function Home() {
   // Chat view
   return (
     <div className="h-screen flex flex-col bg-background">
-      <ToolboxSearch open={toolboxOpen} onOpenChange={setToolboxOpen} onInserted={() => setToolboxOpen(false)} />
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-border/50 bg-card/50 backdrop-blur-sm">
         <div className="flex items-center gap-3">
@@ -1634,28 +1701,6 @@ export function Home() {
         </DialogContent>
       </Dialog>
 
-      {/* Toolbox Search */}
-      <ToolboxSearch
-        open={toolboxOpen}
-        onOpenChange={setToolboxOpen}
-      />
-
-      {/* Auth Modal (Login / Register) */}
-      <AuthModal
-        open={authModalOpen}
-        onOpenChange={setAuthModalOpen}
-        onOpenAdmin={() => {
-          setAuthModalOpen(false);
-          setAdminDashboardOpen(true);
-        }}
-      />
-
-      {/* Admin Dashboard */}
-      <AdminDashboard
-        open={adminDashboardOpen}
-        onOpenChange={setAdminDashboardOpen}
-      />
-
       {/* Out of Credits Alert Dialog */}
       <Dialog open={creditAlertOpen} onOpenChange={setCreditAlertOpen}>
         <DialogContent className="max-w-md">
@@ -1688,21 +1733,7 @@ export function Home() {
         </DialogContent>
       </Dialog>
 
-      {/* Connection popup when Studio is not connected */}
-      <ConnectionPopup
-        open={!isConnected && !dismissConnection}
-        status={studioStatus}
-        retrying={connectionRetrying}
-        onRetry={handleRetryConnection}
-        onDismiss={() => setDismissConnection(true)}
-      />
-
-      {/* Game Map */}
-      <GameMap
-        open={showGameMap}
-        onOpenChange={setShowGameMap}
-        onSelectSuggestion={handleGameMapSuggestion}
-      />
+      {renderOverlays()}
     </div>
   );
 }

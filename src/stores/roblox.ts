@@ -2,6 +2,10 @@ import { create } from "zustand";
 import { isStudioConnected, isBridgeRunning, getGameInfo, type GameInfo } from "@/lib/roblox";
 import { useChatStore } from "./chat";
 
+// Throttle game-info refreshes (see checkConnection). Stored outside the store
+// so it isn't persisted/serialized.
+let lastGameInfoFetch = 0;
+
 export type ConnectionStatus = "disconnected" | "bridge_only" | "connected" | "reconnecting";
 
 export interface RobloxState {
@@ -53,6 +57,13 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
       const studioUp = await isStudioConnected();
       
       if (studioUp) {
+        // Refresh game info at most once per 30s; game info rarely changes and
+        // fetching it every poll adds a redundant relay round-trip.
+        if (Date.now() - lastGameInfoFetch > 30000) {
+          lastGameInfoFetch = Date.now();
+          get().fetchGameInfo();
+        }
+
         // Successfully connected
         if (state.consecutiveFailures > 0) {
           // Was disconnected, now reconnecting
@@ -66,7 +77,6 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
           // Wait a moment before declaring fully connected
           setTimeout(() => {
             set({ status: "connected", lastCheck: new Date() });
-            get().fetchGameInfo();
           }, 1000);
         } else {
           // Already connected, keep status
@@ -77,7 +87,6 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
             lastSuccessfulPoll: now,
             consecutiveFailures: 0,
           });
-          get().fetchGameInfo();
         }
       } else {
         // Bridge running but no client connected

@@ -212,11 +212,14 @@ async function webGetAssetDetailsBatch(
   // Use our server-side asset details endpoint (batch)
   if (ids.length === 0) return {};
   const results: Record<number, { name: string; creatorName: string; creatorId: number }> = {};
-  for (const id of ids) {
-    const asset = await webGetAssetDetails(id);
-    if (asset) {
-      results[id] = { name: asset.name, creatorName: asset.creatorName, creatorId: asset.creatorId };
-    }
+  // Run detail fetches in parallel instead of sequentially (N+1 → batch).
+  // Bound concurrency to avoid hammering the endpoints.
+  for (const batch of chunkArr(ids, 10)) {
+    const fetched = await Promise.all(batch.map((id) => webGetAssetDetails(id)));
+    batch.forEach((id, idx) => {
+      const asset = fetched[idx];
+      if (asset) results[id] = { name: asset.name, creatorName: asset.creatorName, creatorId: asset.creatorId };
+    });
   }
   return results;
 }
@@ -483,22 +486,74 @@ async function tauriGetAssetDetails(
 // Public API — dispatches to web or Tauri based on environment
 // ---------------------------------------------------------------------------
 
+// Simple in-memory TTL cache to avoid repeated network calls for identical
+// queries/assets, plus in-flight dedup so concurrent identical calls share one
+// request instead of firing duplicates.
+const SEARCH_TTL = 5 * 60 * 1000;
+const ASSET_TTL = 10 * 60 * 1000;
+const searchCache = new Map<string, { at: number; value: ToolboxSearchResult }>();
+const assetCache = new Map<number, { at: number; value: ToolboxAsset | null }>();
+const inflightSearch = new Map<string, Promise<ToolboxSearchResult>>();
+const inflightAsset = new Map<number, Promise<ToolboxAsset | null>>();
+
+function pruneCache<T>(map: Map<string | number, { at: number; value: T }>, max = 200) {
+  if (map.size > max) {
+    const now = Date.now();
+    for (const [k, v] of map) {
+      if (now - v.at > SEARCH_TTL) map.delete(k);
+    }
+  }
+}
+
 export async function searchToolbox(
   query: string,
   category: AssetCategory = "Model",
   limit = 10
 ): Promise<ToolboxSearchResult> {
-  if (isWebMode) {
-    return webSearchToolbox(query, category, limit);
+  const key = `${category}\u0000${query}\u0000${limit}`;
+  const hit = searchCache.get(key);
+  if (hit && Date.now() - hit.at < SEARCH_TTL) return hit.value;
+
+  const inflight = inflightSearch.get(key);
+  if (inflight) return inflight;
+
+  const run = (async () => {
+    const result = isWebMode
+      ? await webSearchToolbox(query, category, limit)
+      : await tauriSearchToolbox(query, category, limit);
+    searchCache.set(key, { at: Date.now(), value: result });
+    pruneCache(searchCache);
+    return result;
+  })();
+  inflightSearch.set(key, run);
+  try {
+    return await run;
+  } finally {
+    inflightSearch.delete(key);
   }
-  return tauriSearchToolbox(query, category, limit);
 }
 
 export async function getAssetDetails(
   assetId: number
 ): Promise<ToolboxAsset | null> {
-  if (isWebMode) {
-    return webGetAssetDetails(assetId);
+  const hit = assetCache.get(assetId);
+  if (hit && Date.now() - hit.at < ASSET_TTL) return hit.value;
+
+  const inflight = inflightAsset.get(assetId);
+  if (inflight) return inflight;
+
+  const run = (async () => {
+    const result = isWebMode
+      ? await webGetAssetDetails(assetId)
+      : await tauriGetAssetDetails(assetId, await getFetch());
+    assetCache.set(assetId, { at: Date.now(), value: result });
+    pruneCache(assetCache);
+    return result;
+  })();
+  inflightAsset.set(assetId, run);
+  try {
+    return await run;
+  } finally {
+    inflightAsset.delete(assetId);
   }
-  return tauriGetAssetDetails(assetId, await getFetch());
 }

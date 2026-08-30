@@ -1,5 +1,61 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
+
+const STORAGE_KEY = "stud-chat-storage";
+
+// The persisted shape (matches partialize below).
+type PersistedChat = { sessions: ChatSession[]; currentSessionId: string | null };
+
+// Throttle localStorage writes. During AI streaming the store is updated up to
+// ~60x/sec, and the default persist middleware serializes + writes the entire
+// session on every set — a significant jank source. Debounce the disk write and
+// flush synchronously on page unload so nothing is lost.
+function createDebouncedStorage(delay = 250): PersistStorage<PersistedChat> {
+  let pendingValue: string | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const write = () => {
+    timer = null;
+    if (pendingValue !== null) {
+      try {
+        localStorage.setItem(STORAGE_KEY, pendingValue);
+      } catch {
+        /* storage quota / unavailable */
+      }
+      pendingValue = null;
+    }
+  };
+
+  const schedule = (value: StorageValue<PersistedChat>) => {
+    pendingValue = JSON.stringify(value);
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(write, delay);
+  };
+
+  if (typeof window !== "undefined") {
+    window.addEventListener("pagehide", write);
+    window.addEventListener("beforeunload", write);
+  }
+
+  return {
+    getItem: (name) => {
+      try {
+        const raw = localStorage.getItem(name);
+        return raw ? (JSON.parse(raw) as StorageValue<PersistedChat>) : null;
+      } catch {
+        return null;
+      }
+    },
+    setItem: (_name, value) => schedule(value),
+    removeItem: (name) => {
+      try {
+        localStorage.removeItem(name);
+      } catch {
+        /* ignore */
+      }
+    },
+  };
+}
 
 export interface ToolCall {
   id: string;
@@ -277,7 +333,8 @@ export const useChatStore = create<ChatState>()(
       },
     }),
     {
-      name: "stud-chat-storage",
+      name: STORAGE_KEY,
+      storage: createDebouncedStorage(),
       partialize: (state) => ({
         sessions: state.sessions,
         currentSessionId: state.currentSessionId,

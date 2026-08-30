@@ -42,7 +42,7 @@ import {
   MECHANIC_STATUS_META,
   CATEGORY_META,
 } from "@/components/chat/GameGraphCanvas";
-import { useConnectionMonitor } from "@/hooks/useConnectionMonitor";
+import { useRobloxStore } from "@/stores/roblox";
 
 interface GameMapProps {
   open: boolean;
@@ -71,7 +71,7 @@ export function GameMap({ open, onOpenChange, onSelectSuggestion }: GameMapProps
     updateMechanic,
     setNodeStatus,
   } = useGameMapStore();
-  const { isConnected: studioConnected } = useConnectionMonitor();
+  const studioConnected = useRobloxStore((s) => s.status === "connected");
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null);
   const [selectedMechanicId, setSelectedMechanicId] = useState<string | null>(null);
   const [addingChildTo, setAddingChildTo] = useState<string | null>(null);

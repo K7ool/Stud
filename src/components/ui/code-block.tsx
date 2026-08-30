@@ -1,6 +1,16 @@
 import { cn } from "@/lib/utils"
-import React, { useEffect, useState } from "react"
-import { codeToHtml } from "shiki"
+import React, { useEffect, useRef, useState } from "react"
+
+// Lazy-load shiki so its core (and the per-language/per-theme chunks it pulls
+// in on demand) stay out of the initial critical bundle. `codeToHtml` is async
+// anyway, so we can fetch it only when the first code block actually renders.
+let shikiPromise: Promise<typeof import("shiki")> | null = null
+function getShiki(): Promise<typeof import("shiki")> {
+  if (!shikiPromise) {
+    shikiPromise = import("shiki")
+  }
+  return shikiPromise
+}
 
 export type CodeBlockProps = {
   children?: React.ReactNode
@@ -29,6 +39,11 @@ export type CodeBlockCodeProps = {
   className?: string
 } & React.HTMLProps<HTMLDivElement>
 
+// Highlighting is expensive (shiki re-tokenizes the whole snippet) and, while
+// the AI streams a script, the snippet grows one token at a time. We render the
+// plain text immediately (fast perceived output) and debounce the highlight so
+// it only runs once the snippet has been stable for a short time — avoiding
+// re-tokenizing the entire (growing) code on every streamed token.
 function CodeBlockCode({
   code,
   language = "tsx",
@@ -37,18 +52,29 @@ function CodeBlockCode({
   ...props
 }: CodeBlockCodeProps) {
   const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null)
+  const codeRef = useRef(code)
 
   useEffect(() => {
-    async function highlight() {
-      if (!code) {
+    codeRef.current = code
+
+    const timer = setTimeout(async () => {
+      const current = codeRef.current
+      if (!current) {
         setHighlightedHtml("<pre><code></code></pre>")
         return
       }
+      try {
+        const shiki = await getShiki()
+        const html = await shiki.codeToHtml(current, { lang: language, theme })
+        // Only commit the result if the code hasn't changed since.
+        if (codeRef.current === current) setHighlightedHtml(html)
+      } catch {
+        // Highlight failed — stay on the plain render and retry on the next
+        // code change (highlightedHtml remains null).
+      }
+    }, 250)
 
-      const html = await codeToHtml(code, { lang: language, theme })
-      setHighlightedHtml(html)
-    }
-    highlight()
+    return () => clearTimeout(timer)
   }, [code, language, theme])
 
   const classNames = cn(
@@ -56,7 +82,6 @@ function CodeBlockCode({
     className
   )
 
-  // SSR fallback: render plain code if not hydrated yet
   return highlightedHtml ? (
     <div
       className={classNames}
