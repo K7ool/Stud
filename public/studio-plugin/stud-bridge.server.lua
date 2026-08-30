@@ -28,7 +28,7 @@ local MAX_ACTIVITY_LOG = 10
 -- Web-pairing config (set via the widget UI).
 -- When RELAY_BASE + pairCode are configured, the plugin polls the Vercel
 -- relay instead of localhost:3001, allowing the website to drive Studio.
-local RELAY_BASE = ""
+local RELAY_BASE = "https://stud-weld.vercel.app"
 local pairCode = ""
 local POLL_URL = LOCAL_POLL_URL
 local RESPOND_URL = LOCAL_RESPOND_URL

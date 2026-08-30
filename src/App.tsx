@@ -4,10 +4,13 @@ import { PrereqWizard } from "@/components/prereq/PrereqWizard";
 import Home from "@/pages/Home";
 import "./index.css";
 
+const isWebMode =
+  typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
+
 function App() {
   return (
     <TooltipProvider>
-      <PrereqWizard />
+      {isWebMode ? null : <PrereqWizard />}
       <Home />
       <Toaster position="bottom-right" richColors />
     </TooltipProvider>
