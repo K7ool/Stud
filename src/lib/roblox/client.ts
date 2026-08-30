@@ -229,20 +229,11 @@ export interface GameInfo {
 
 export async function getGameInfo(): Promise<GameInfo | null> {
   if (isWebMode) {
-    const site = getSiteId();
-    if (!site) return null;
-    try {
-      const res = await fetch(`${RELAY_BASE}/api/stud/request?site=${site}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: "/game/info" }),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      return data as GameInfo;
-    } catch {
-      return null;
-    }
+    // Use the relay push/poll protocol (same as studioRequest). The direct
+    // /api/stud/request route does not exist on the relay and returns 405.
+    if (!getSiteId()) return null;
+    const res = await studioRequest<GameInfo>("/game/info");
+    return res.success ? res.data : null;
   }
 
   try {

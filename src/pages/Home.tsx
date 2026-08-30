@@ -30,6 +30,7 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { EmptyState } from "@/components/EmptyState";
 import { IntentSuggestions } from "@/components/chat/IntentSuggestions";
 import { GameMap } from "@/components/chat/GameMap";
+import { ConnectionPopup } from "@/components/chat/ConnectionPopup";
 import { detectIntent, parseSlashCommand } from "@/lib/intents";
 import { useChatStore, Attachment } from "@/stores/chat";
 import { useSettingsStore } from "@/stores/settings";
@@ -464,13 +465,15 @@ export function Home() {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingSessionName, setEditingSessionName] = useState("");
   const [showGameMap, setShowGameMap] = useState(false);
+  const [dismissConnection, setDismissConnection] = useState(false);
+  const [connectionRetrying, setConnectionRetrying] = useState(false);
 
   const { rootFeature, setRootFeature, addFeature } = useGameMapStore();
   const { appSettings } = useSettingsStore();
 
   const messages = getCurrentMessages();
   const { hasApiKey } = useSettingsStore();
-  const { status: studioStatus, startPolling, gameInfo, fetchGameInfo } = useRobloxStore();
+  const { status: studioStatus, startPolling, gameInfo, fetchGameInfo, checkConnection } = useRobloxStore();
   const { sendMessage } = useChat();
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -761,6 +764,16 @@ export function Home() {
     setInput(prompt);
     handleSubmit();
   };
+
+  // Manual retry from the connection popup.
+  const handleRetryConnection = useCallback(async () => {
+    setConnectionRetrying(true);
+    try {
+      await checkConnection();
+    } finally {
+      setConnectionRetrying(false);
+    }
+  }, [checkConnection]);
 
   // Show connection screen if not connected (unless workWithoutStudio is enabled).
   const canWorkOffline = appSettings.workWithoutStudio;
@@ -1674,6 +1687,15 @@ export function Home() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Connection popup when Studio is not connected */}
+      <ConnectionPopup
+        open={!isConnected && !dismissConnection}
+        status={studioStatus}
+        retrying={connectionRetrying}
+        onRetry={handleRetryConnection}
+        onDismiss={() => setDismissConnection(true)}
+      />
 
       {/* Game Map */}
       <GameMap
