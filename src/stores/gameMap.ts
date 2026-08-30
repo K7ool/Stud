@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { buildMechanicsFromScan, inferEdges, normalizeInstanceDump, type StudioScanResult } from "@/lib/game-analysis";
 
 export interface GameFeature {
   id: string;
@@ -9,6 +10,100 @@ export interface GameFeature {
   children: GameFeature[];
   createdAt: string;
   completedAt?: string;
+}
+
+/* ==================================================================== */
+/* Richer mechanic model for the Game Map graph                          */
+/* ==================================================================== */
+
+export type MechanicStatus =
+  | "discovered"
+  | "planned"
+  | "partial"
+  | "implemented"
+  | "verified"
+  | "error"
+  | "missing"
+  | "unknown";
+
+export type MechanicCategory =
+  | "core"
+  | "economy"
+  | "progression"
+  | "collection"
+  | "combat"
+  | "quests"
+  | "social"
+  | "ui"
+  | "world";
+
+export type ScanEvidence = {
+  type: "instance" | "script" | "remote" | "gui" | "folder" | "attribute" | "pattern";
+  path: string;
+};
+
+export type RelationType =
+  | "depends_on"
+  | "unlocks"
+  | "uses"
+  | "produces"
+  | "modifies"
+  | "triggers"
+  | "interacts_with"
+  | "child_of"
+  | "related_to";
+
+export interface MechanicEdge {
+  source: string;
+  target: string;
+  type: RelationType;
+  confidence: number;
+}
+
+export interface MechanicNode {
+  id: string;
+  name: string;
+  category: MechanicCategory;
+  description: string;
+  status: MechanicStatus;
+  confidence: number;
+  source: "roblox_studio" | "ai" | "manual" | "analysis";
+  instances: string[];
+  scripts: string[];
+  remoteEvents: string[];
+  guis: string[];
+  dependencies: string[];
+  dependents: string[];
+  progress: number;
+  evidence: ScanEvidence[];
+  children: MechanicNode[];
+  aiNotes?: string;
+  position?: { x: number; y: number };
+  createdAt: string;
+}
+
+export interface AnalysisProgressEvent {
+  stage: string;
+  detail?: string;
+}
+
+export interface GameMapRichState {
+  nodes: MechanicNode[];
+  edges: MechanicEdge[];
+  projectName: string | null;
+  lastAnalysisAt: string | null;
+  analysisRunning: boolean;
+  analysisStage: string | null;
+  disconnected: boolean;
+  scanCount: number;
+
+  applyAnalysis: (scan: StudioScanResult) => void;
+  scanConnectedProject: (onProgress?: (ev: AnalysisProgressEvent) => void) => Promise<{ success: boolean; nodes: number; error?: string }>;
+  addMechanic: (node: Omit<MechanicNode, "id" | "createdAt" | "children" | "dependencies" | "dependents">, deps?: string[]) => string;
+  updateMechanic: (id: string, updates: Partial<MechanicNode>) => void;
+  linkMechanics: (sourceId: string, targetId: string, type?: RelationType, confidence?: number) => void;
+  setNodeStatus: (id: string, status: MechanicStatus, progress?: number) => void;
+  resetAnalysisState: () => void;
 }
 
 export interface FeatureSuggestion {
@@ -166,12 +261,56 @@ export function generateSmartFallbackSuggestions(name: string): FeatureSuggestio
   ];
 }
 
-export const useGameMapStore = create<GameMapState>()(
-  persist(
+/**
+ * Merge explicit per-class search results into a scan so evidence (scripts,
+ * RemoteEvents, GUIs) is complete even where the recursive children dump was
+ * shallow or skipped service containers.
+ */
+function mergeBulkResults(scan: StudioScanResult, extra: Array<{ path: string; name: string; className: string }>): StudioScanResult {
+  const seenPaths = new Set(scan.instances.map((i) => i.path));
+  const mergedInstances = [...scan.instances];
+  for (const item of extra) {
+    if (!item?.path || !item?.className) continue;
+    if (seenPaths.has(item.path)) continue;
+    seenPaths.add(item.path);
+    mergedInstances.push({ path: item.path, name: item.name, className: item.className });
+    switch (item.className) {
+      case "RemoteEvent":
+        if (!scan.remoteEvents.some((r) => r.path === item.path)) scan.remoteEvents.push({ path: item.path, name: item.name, className: item.className });
+        break;
+      case "RemoteFunction":
+        if (!scan.remoteFunctions.some((r) => r.path === item.path)) scan.remoteFunctions.push({ path: item.path, name: item.name, className: item.className });
+        break;
+      case "ModuleScript":
+      case "Script":
+      case "LocalScript":
+        if (!scan.scripts.some((s) => s.path === item.path)) scan.scripts.push({ path: item.path, name: item.name, className: item.className });
+        break;
+      case "ScreenGui":
+        if (!scan.guis.some((g) => g.path === item.path)) scan.guis.push({ path: item.path, name: item.name, className: item.className });
+        break;
+      default:
+        break;
+    }
+  }
+  return { ...scan, instances: mergedInstances };
+}
+
+export const useGameMapStore = create<GameMapState & GameMapRichState>()(  persist(
     (set, get) => ({
       features: [],
       rootFeature: null,
       suggestions: {},
+
+      // Rich graph state
+      nodes: [],
+      edges: [],
+      projectName: null,
+      lastAnalysisAt: null,
+      analysisRunning: false,
+      analysisStage: null,
+      disconnected: false,
+      scanCount: 0,
 
       addFeature: (parentId, feature) => {
         const id = crypto.randomUUID();
@@ -410,7 +549,183 @@ export const useGameMapStore = create<GameMapState>()(
       },
 
       clearMap: () =>
-        set({ features: [], rootFeature: null, suggestions: {} }),
+        set({ features: [], rootFeature: null, suggestions: {}, nodes: [], edges: [], projectName: null, lastAnalysisAt: null }),
+
+      /* ================================================================ */
+      /* Rich graph actions                                                */
+      /* ================================================================ */
+
+      applyAnalysis: (scan) => {
+        const mechanics = buildMechanicsFromScan(scan);
+        const edges = inferEdges(mechanics);
+        set((s) => ({
+          nodes: mechanics,
+          edges,
+          projectName: scan.projectName ?? s.projectName,
+          lastAnalysisAt: new Date().toISOString(),
+          analysisRunning: false,
+          analysisStage: "complete",
+          scanCount: s.scanCount + 1,
+        }));
+      },
+
+      scanConnectedProject: async (onProgress) => {
+        const report = (stage: string, detail?: string) => {
+          set({ analysisStage: stage });
+          onProgress?.({ stage, detail });
+        };
+
+        // Validate Studio connection first via the existing relay/system.
+        const { isStudioConnected, notConnectedError, studioRequest, cachedStudioRequest } = await import("@/lib/roblox");
+        const connected = await isStudioConnected();
+        if (!connected) {
+          set({ disconnected: true, analysisRunning: false });
+          return {
+            success: false,
+            nodes: 0,
+            error: notConnectedError(),
+          };
+        }
+        set({ disconnected: false });
+
+        try {
+          set({ analysisRunning: true });
+
+          report("connecting", "Validating Roblox Studio connection");
+          const gameInfo: any = await (async () => {
+            const info = await cachedStudioRequest<any>("/game/info", {}, 5000);
+            return info.success ? (info.data as any) : null;
+          })();
+
+          report("scanning", "Inspecting project structure");
+          // Recursive scan of the key containers that usually hold game logic.
+          const containers = [
+            "game.Workspace",
+            "game.ReplicatedStorage",
+            "game.ServerStorage",
+            "game.ServerScriptService",
+            "game.StarterGui",
+            "game.StarterPack",
+            "game.ReplicatedFirst",
+          ];
+
+          const rawChunks: any[] = [];
+          for (const container of containers) {
+            const res = await studioRequest<any>("/instance/children", {
+              path: container,
+              recursive: true,
+            });
+            if (res.success && Array.isArray(res.data)) {
+              rawChunks.push(...res.data);
+            }
+          }
+
+          // Also list RemoteEvents/Functions explicitly via search where cheap.
+          report("inspecting", "Discovering scripts and instances");
+          const searchClasses = ["RemoteEvent", "RemoteFunction", "ModuleScript", "Script", "LocalScript", "ScreenGui"];
+          const extra: any[] = [];
+          for (const cls of searchClasses) {
+            const res = await studioRequest<any>("/instance/search", { root: "game", className: cls, limit: 200 });
+            if (res.success && Array.isArray(res.data)) {
+              extra.push(...res.data);
+            }
+          }
+
+          report("analyzing", "Detecting game mechanics");
+          const scan = normalizeInstanceDump({ children: rawChunks }, gameInfo?.name, gameInfo?.placeId);
+          // Merge explicit class searches into the scan evidence.
+          const merged = mergeBulkResults(scan, extra);
+          const mechanics = buildMechanicsFromScan(merged);
+          const edges = inferEdges(mechanics);
+
+          report("building", "Building dependency graph");
+          set((s) => ({
+            nodes: mechanics,
+            edges,
+            projectName: gameInfo?.name ?? s.projectName,
+            lastAnalysisAt: new Date().toISOString(),
+            analysisRunning: false,
+            analysisStage: "complete",
+            scanCount: s.scanCount + 1,
+          }));
+
+          return { success: true, nodes: mechanics.length };
+        } catch (err) {
+          set({ analysisRunning: false, analysisStage: "error" });
+          const message = err instanceof Error ? err.message : String(err);
+          return { success: false, nodes: 0, error: message };
+        }
+      },
+
+      addMechanic: (node, deps = []) => {
+        const id = node.name.toLowerCase().replace(/[^a-z0-9]+/g, "_") || Math.random().toString(36).slice(2, 8);
+        const existing = get().nodes.find((n) => n.id === id);
+        if (existing) {
+          // Merge: keep existing evidence, refresh status from new signal.
+          set((s) => ({
+            nodes: s.nodes.map((n) =>
+              n.id === id
+                ? { ...n, ...node, status: node.status === "discovered" ? n.status : node.status, id }
+                : n
+            ),
+          }));
+          return id;
+        }
+        const newNode: MechanicNode = {
+          ...node,
+          id,
+          dependencies: deps,
+          dependents: [],
+          children: [],
+          createdAt: new Date().toISOString(),
+        };
+        // Register dependents on target nodes.
+        const nodes = get().nodes.map((n) =>
+          deps.includes(n.id)
+            ? { ...n, dependents: [...new Set([...(n.dependents || []), id])] }
+            : n
+        );
+        set({ nodes: [...nodes, newNode] });
+        return id;
+      },
+
+      updateMechanic: (id, updates) => {
+        set((s) => ({
+          nodes: s.nodes.map((n) => (n.id === id ? { ...n, ...updates } : n)),
+        }));
+      },
+
+      linkMechanics: (sourceId, targetId, type = "depends_on", confidence = 0.6) => {
+        set((s) => {
+          const edgeExists = s.edges.some((e) => e.source === sourceId && e.target === targetId);
+          if (edgeExists) return s;
+          // Avoid self-links and cycles at the locality level for now.
+          if (sourceId === targetId) return s;
+          return {
+            edges: [...s.edges, { source: sourceId, target: targetId, type, confidence }],
+            nodes: s.nodes.map((n) => {
+              if (n.id === targetId && !n.dependencies.includes(sourceId)) {
+                return { ...n, dependencies: [...n.dependencies, sourceId] };
+              }
+              if (n.id === sourceId && !n.dependents.includes(targetId)) {
+                return { ...n, dependents: [...n.dependents, targetId] };
+              }
+              return n;
+            }),
+          };
+        });
+      },
+
+      setNodeStatus: (id, status, progress) => {
+        set((s) => ({
+          nodes: s.nodes.map((n) =>
+            n.id === id ? { ...n, status, progress: progress ?? n.progress } : n
+          ),
+        }));
+      },
+
+      resetAnalysisState: () =>
+        set({ analysisRunning: false, analysisStage: null, disconnected: false }),
     }),
     {
       name: "stud-game-map",
@@ -423,6 +738,14 @@ export const useGameMapStore = create<GameMapState>()(
             .filter(([, v]) => v.options.length > 0 && !v.error)
             .map(([k, v]) => [k, { ...v, loading: false, error: null }])
         ),
+        // Persist rich graph state so maps survive reloads, keyed by their
+        // project association (projectName) to avoid mixing projects.
+        nodes: state.nodes,
+        edges: state.edges,
+        projectName: state.projectName,
+        lastAnalysisAt: state.lastAnalysisAt,
+        disconnected: state.disconnected,
+        scanCount: state.scanCount,
       }),
     }
   )

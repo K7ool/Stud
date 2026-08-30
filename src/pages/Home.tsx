@@ -921,7 +921,7 @@ export function Home() {
             </Button>
 
             {/* Admin Dashboard (If admin) */}
-            {currentUser?.isAdmin && (
+            {currentUser?.role === "admin" && (
               <Button
                 variant="outline"
                 size="sm"
@@ -1280,7 +1280,7 @@ export function Home() {
           </Button>
 
           {/* Admin Dashboard (If admin) */}
-          {currentUser?.isAdmin && (
+          {currentUser?.role === "admin" && (
             <Button
               variant="outline"
               size="sm"

@@ -1,5 +1,12 @@
-import { useEffect, useState, useMemo } from "react";
-import { useGameMapStore, GameFeature, FeatureSuggestion } from "@/stores/gameMap";
+import { useEffect, useState, useMemo, type ReactNode } from "react";
+import {
+  useGameMapStore,
+  GameFeature,
+  FeatureSuggestion,
+  type MechanicNode,
+  type MechanicStatus,
+  type MechanicCategory,
+} from "@/stores/gameMap";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -23,7 +30,19 @@ import {
   Play,
   Layers,
   ChevronRight,
+  Network,
+  Box,
+  FileCode2,
+  Zap,
+  User,
+  X,
 } from "lucide-react";
+import {
+  GameGraphCanvas,
+  MECHANIC_STATUS_META,
+  CATEGORY_META,
+} from "@/components/chat/GameGraphCanvas";
+import { useConnectionMonitor } from "@/hooks/useConnectionMonitor";
 
 interface GameMapProps {
   open: boolean;
@@ -42,11 +61,39 @@ export function GameMap({ open, onOpenChange, onSelectSuggestion }: GameMapProps
     deleteFeature,
     fetchSuggestions,
     clearSuggestions,
+    nodes,
+    edges,
+    projectName,
+    disconnected: storeDisconnected,
+    analysisRunning,
+    analysisStage,
+    scanConnectedProject,
+    updateMechanic,
+    setNodeStatus,
   } = useGameMapStore();
+  const { isConnected: studioConnected } = useConnectionMonitor();
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null);
+  const [selectedMechanicId, setSelectedMechanicId] = useState<string | null>(null);
   const [addingChildTo, setAddingChildTo] = useState<string | null>(null);
   const [newChildName, setNewChildName] = useState("");
-  const [viewMode, setViewMode] = useState<"graph" | "tree">("graph");
+  const [viewMode, setViewMode] = useState<"graph" | "mechanics" | "tree">("graph");
+  const [statusFilter, setStatusFilter] = useState<MechanicStatus | "all" | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<MechanicCategory | "all" | null>(null);
+
+  useEffect(() => {
+    if (!open || viewMode !== "mechanics") return;
+    useGameMapStore.getState().resetAnalysisState();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Sync disconnected state whenever connection changes.
+  useEffect(() => {
+    useGameMapStore.setState({ disconnected: !studioConnected });
+  }, [studioConnected, open]);
+
+  const selectedMechanic = selectedMechanicId
+    ? nodes.find((n) => n.id === selectedMechanicId) ?? null
+    : null;
 
   const allFeatures = useMemo(() => {
     return rootFeature
@@ -114,6 +161,20 @@ export function GameMap({ open, onOpenChange, onSelectSuggestion }: GameMapProps
     setAddingChildTo(null);
   };
 
+  const handleScan = () => {
+    void scanConnectedProject();
+  };
+
+  const mechanicCounts = useMemo(() => {
+    const byStatus: Record<string, number> = {};
+    const byCategory: Record<string, number> = {};
+    for (const n of nodes) {
+      byStatus[n.status] = (byStatus[n.status] || 0) + 1;
+      byCategory[n.category] = (byCategory[n.category] || 0) + 1;
+    }
+    return { byStatus, byCategory };
+  }, [nodes]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-5xl h-[85vh] overflow-hidden flex flex-col p-6">
@@ -148,6 +209,21 @@ export function GameMap({ open, onOpenChange, onSelectSuggestion }: GameMapProps
             </Button>
             <Button
               size="sm"
+              variant={viewMode === "mechanics" ? "secondary" : "ghost"}
+              className="h-7 text-xs px-2.5 gap-1.5"
+              onClick={() => setViewMode("mechanics")}
+              title="Real project mechanics graph (requires Studio)"
+            >
+              <Network className="w-3.5 h-3.5" />
+              Mechanics
+              {nodes.length > 0 && (
+                <span className="text-[9px] px-1 py-0.5 rounded-full bg-primary/15 text-primary font-mono">
+                  {nodes.length}
+                </span>
+              )}
+            </Button>
+            <Button
+              size="sm"
               variant={viewMode === "tree" ? "secondary" : "ghost"}
               className="h-7 text-xs px-2.5 gap-1.5"
               onClick={() => setViewMode("tree")}
@@ -159,6 +235,99 @@ export function GameMap({ open, onOpenChange, onSelectSuggestion }: GameMapProps
         </DialogHeader>
 
         <div className="flex flex-1 gap-5 min-h-0 pt-3">
+          {/* Mechanics Canvas View (rich graph from real scan data) */}
+          {viewMode === "mechanics" ? (
+            <div className="flex flex-1 gap-5 min-h-0">
+              {/* Graph canvas */}
+              <div className="flex-1 flex flex-col gap-3 min-h-0">
+                {/* Analysis progress strip */}
+                {analysisRunning && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground px-1">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                    <span className="capitalize">{analysisStage ?? "analyzing"}…</span>
+                  </div>
+                )}
+
+                {/* Filters */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground mr-1">
+                    Status
+                  </span>
+                  <FilterChip
+                    active={statusFilter === "all" || statusFilter === null}
+                    label="All"
+                    onClick={() => setStatusFilter(null)}
+                  />
+                  {(Object.keys(MECHANIC_STATUS_META) as MechanicStatus[])
+                    .filter((k) => mechanicCounts.byStatus[k] > 0)
+                    .map((k) => (
+                      <FilterChip
+                        key={k}
+                        active={statusFilter === k}
+                        label={MECHANIC_STATUS_META[k].label}
+                        count={mechanicCounts.byStatus[k]}
+                        dotColor={MECHANIC_STATUS_META[k].color}
+                        onClick={() => setStatusFilter(statusFilter === k ? null : k)}
+                      />
+                    ))}
+                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground mx-1">
+                    Category
+                  </span>
+                  {(Object.keys(CATEGORY_META) as MechanicCategory[])
+                    .filter((k) => mechanicCounts.byCategory[k] > 0)
+                    .map((k) => (
+                      <FilterChip
+                        key={k}
+                        active={categoryFilter === k}
+                        label={CATEGORY_META[k].label}
+                        count={mechanicCounts.byCategory[k]}
+                        dotColor="#A3A3A3"
+                        onClick={() => setCategoryFilter(categoryFilter === k ? null : k)}
+                      />
+                    ))}
+                </div>
+
+                <GameGraphCanvas
+                  nodes={nodes}
+                  edges={edges}
+                  selectedId={selectedMechanicId}
+                  onSelect={setSelectedMechanicId}
+                  onScan={handleScan}
+                  scanning={analysisRunning}
+                  connected={studioConnected}
+                  statusFilter={statusFilter}
+                  categoryFilter={categoryFilter}
+                />
+              </div>
+
+              {/* Details / Evidence panel */}
+              <div className="w-[320px] shrink-0 border rounded-xl bg-card overflow-y-auto">
+                {selectedMechanic ? (
+                  <MechanicDetailPanel
+                    node={selectedMechanic}
+                    onStatusChange={(s, p) => setNodeStatus(selectedMechanic.id, s, p)}
+                    onClose={() => setSelectedMechanicId(null)}
+                    onSelectNode={setSelectedMechanicId}
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-center p-6 gap-2 h-full">
+                    <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center text-muted-foreground">
+                      <Network className="w-5 h-5" />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Select a mechanic to inspect its evidence, dependencies, and real project instances.
+                    </p>
+                    <p className="text-[10px] text-muted-foreground/70">
+                      {nodes.length === 0
+                        ? "Connect Studio then click “Scan & Analyze” to build a real blueprint."
+                        : `${nodes.length} mechanics • ${edges.length} relations`}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+          <> 
           {/* Main Visual Connected Canvas / Tree */}
           <div className="w-7/12 border rounded-xl p-4 overflow-y-auto bg-muted/10 relative flex flex-col">
             <div className="flex items-center justify-between mb-3">
@@ -443,9 +612,238 @@ export function GameMap({ open, onOpenChange, onSelectSuggestion }: GameMapProps
               </div>
             )}
           </div>
+          </>
+          )}
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/* ==================== MECHANICS VIEW SUB-COMPONENTS ==================== */
+
+interface FilterChipProps {
+  label: string;
+  active: boolean;
+  count?: number;
+  dotColor?: string;
+  onClick: () => void;
+}
+
+function FilterChip({ label, active, count, dotColor, onClick }: FilterChipProps) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] border transition-colors",
+        active
+          ? "bg-primary/15 border-primary/40 text-primary font-medium"
+          : "bg-muted/30 border-border/60 text-muted-foreground hover:bg-muted/60"
+      )}
+    >
+      {dotColor && (
+        <span className="w-1.5 h-1.5 rounded-full" style={{ background: dotColor }} />
+      )}
+      {label}
+      {typeof count === "number" && count > 0 && (
+        <span className="text-[9px] font-mono text-muted-foreground/70">{count}</span>
+      )}
+    </button>
+  );
+}
+
+interface MechanicDetailPanelProps {
+  node: MechanicNode;
+  onStatusChange: (status: MechanicStatus, progress?: number) => void;
+  onClose: () => void;
+  onSelectNode: (id: string) => void;
+}
+
+function MechanicDetailPanel({ node, onStatusChange, onClose, onSelectNode }: MechanicDetailPanelProps) {
+  const status = MECHANIC_STATUS_META[node.status];
+  const CategoryIcon = CATEGORY_META[node.category]?.icon || Box;
+  const deps = node.dependencies.map((d) => useGameMapStore.getState().nodes.find((n) => n.id === d)).filter(Boolean) as MechanicNode[];
+  const dependents = node.dependents.map((d) => useGameMapStore.getState().nodes.find((n) => n.id === d)).filter(Boolean) as MechanicNode[];
+
+  const progressOptions: { label: string; value: number }[] = [
+    { label: "Idea", value: 0 },
+    { label: "Planned", value: 20 },
+    { label: "In progress", value: 50 },
+    { label: "Almost done", value: 80 },
+    { label: "Complete", value: 100 },
+  ];
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-between px-4 py-3 border-b">
+        <div className="flex items-center gap-2">
+          <span className="w-6 h-6 rounded-lg bg-muted flex items-center justify-center">
+            <CategoryIcon className="w-3.5 h-3.5 text-primary" />
+          </span>
+          <h3 className="text-sm font-semibold">{node.name}</h3>
+        </div>
+        <Button size="icon-xs" variant="ghost" onClick={onClose} title="Close">
+          <X className="w-3.5 h-3.5" />
+        </Button>
+      </div>
+
+      <div className="flex-1 px-4 py-3 space-y-4 min-h-0 overflow-y-auto">
+        <div className="space-y-2">
+          <StatusBadge status={node.status} />
+          <p className="text-xs text-muted-foreground leading-relaxed">{node.description}</p>
+          <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <Zap className="w-3 h-3" />
+              Confidence {Math.round(node.confidence * 100)}%
+            </span>
+            <span className="flex items-center gap-1">
+              <User className="w-3 h-3" />
+              {node.source === "roblox_studio" ? "From Studio" : node.source === "ai" ? "AI generated" : node.source}
+            </span>
+          </div>
+        </div>
+
+        {/* Progress selector */}
+        <div className="space-y-1.5">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Progress</span>
+          <div className="flex flex-wrap gap-1.5">
+            {progressOptions.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => onStatusChange(node.status, opt.value)}
+                className={cn(
+                  "px-2 py-0.5 rounded-full text-[10px] border transition-colors",
+                  (node.progress >= opt.value && node.progress < opt.value + 21) || (opt.value === 100 && node.progress === 100)
+                    ? "bg-primary/15 border-primary/40 text-primary"
+                    : "bg-muted/30 border-border/60 text-muted-foreground hover:bg-muted/60"
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <div className="h-1.5 w-full bg-muted rounded-full overflow-hidden">
+            <div className="h-full bg-primary/60 rounded-full transition-all" style={{ width: `${node.progress}%` }} />
+          </div>
+        </div>
+
+        {/* Dependencies */}
+        <Section heading="Depends on" icon={GitFork}>
+          {deps.length > 0 ? (
+            <div className="space-y-1">
+              {deps.map((d) => (
+                <LinkRow key={d.id} id={d.id} name={d.name} status={d.status} onSelect={onSelectNode} />
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11px] text-muted-foreground/70">No dependencies.</p>
+          )}
+        </Section>
+
+        {/* Dependents */}
+        <Section heading="Used by" icon={Network}>
+          {dependents.length > 0 ? (
+            <div className="space-y-1">
+              {dependents.map((d) => (
+                <LinkRow key={d.id} id={d.id} name={d.name} status={d.status} onSelect={onSelectNode} />
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11px] text-muted-foreground/70">Nothing depends on this yet.</p>
+          )}
+        </Section>
+
+        {/* Real evidence */}
+        <Section heading="Evidence in project" icon={FileCode2}>
+          <div className="space-y-2">
+            {node.instances.length > 0 && (
+              <EvidenceList label="Instances" paths={node.instances} />
+            )}
+            {node.scripts.length > 0 && (
+              <EvidenceList label="Scripts" paths={node.scripts} />
+            )}
+            {node.remoteEvents.length > 0 && (
+              <EvidenceList label="RemoteEvents/Functions" paths={node.remoteEvents} />
+            )}
+            {node.guis.length > 0 && (
+              <EvidenceList label="GUIs" paths={node.guis} />
+            )}
+            {node.evidence.length > 0 && (
+              <EvidenceList
+                label="Detected signals"
+                paths={node.evidence.map((e) => e.path)}
+              />
+            )}
+            {node.instances.length === 0 &&
+              node.scripts.length === 0 &&
+              node.remoteEvents.length === 0 &&
+              node.guis.length === 0 &&
+              node.evidence.length === 0 && (
+                <p className="text-[11px] text-muted-foreground/70">
+                  No project evidence yet. Connect Studio and scan to detect real instances.
+                </p>
+              )}
+          </div>
+        </Section>
+      </div>
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: MechanicStatus }) {
+  const meta = MECHANIC_STATUS_META[status];
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border"
+      style={{ color: meta.color, background: `${meta.color}14`, borderColor: `${meta.color}33` }}
+    >
+      <span>{meta.icon}</span>
+      {meta.label}
+    </span>
+  );
+}
+
+function Section({ heading, icon: Icon, children }: { heading: string; icon: any; children: ReactNode }) {
+  return (
+    <div className="space-y-2">
+      <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <Icon className="w-3 h-3" />
+        {heading}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function LinkRow({ id, name, status, onSelect }: { id: string; name: string; status: MechanicStatus; onSelect: (id: string) => void }) {
+  return (
+    <button
+      onClick={() => onSelect(id)}
+      className="w-full flex items-center justify-between px-2 py-1 rounded-md border border-border/60 bg-muted/20 text-left hover:bg-muted/40 text-xs"
+    >
+      <span className="truncate">{name}</span>
+      <span className="text-[9px] text-muted-foreground">{MECHANIC_STATUS_META[status]?.icon} {MECHANIC_STATUS_META[status]?.label}</span>
+    </button>
+  );
+}
+
+function EvidenceList({ label, paths }: { label: string; paths: string[] }) {
+  const shown = paths.slice(0, 12);
+  const hidden = paths.length - shown.length;
+  return (
+    <div>
+      <span className="text-[10px] font-semibold text-muted-foreground">{label} ({paths.length})</span>
+      <div className="mt-1 space-y-0.5">
+        {shown.map((p, i) => (
+          <div key={i} className="truncate text-[10px] font-mono text-muted-foreground/90 pl-1 border-l-2 border-border/50">
+            {p}
+          </div>
+        ))}
+        {hidden > 0 && (
+          <div className="text-[10px] text-muted-foreground/60 pl-1">+{hidden} more</div>
+        )}
+      </div>
+    </div>
   );
 }
 

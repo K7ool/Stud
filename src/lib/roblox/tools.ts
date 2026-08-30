@@ -1364,30 +1364,148 @@ export const runCommand = tool({
 // ============================================================================
 
 export const gameMapUpdate = tool({
-  description: `Update the Game Map with a newly created feature.
+  description: `Update the Game Map with newly created feature(s).
 
 Use this when you create a new game element (script, NPC, weapon, building, system, etc).
 This helps the user visualize what has been built and see suggestions for what to add next.
 
+You may pass up to 8 features at once (features array) to reflect a whole subsystem you just
+built (e.g. a currency system with a shop, balance display, and DataStore save). This shows
+more game blueprint nodes on the map instead of just one.
+
 Examples:
 - After creating a car, call this to add "Car" to the map
 - After creating an NPC, call this to add "NPC" to the map
-- After building a shop system, call this to add "Shop System" to the map`,
+- After building a shop system with currency, call this with features:
+  [ {name:"Shop System",category:"economy"}, {name:"Currency",category:"economy"},
+    {name:"Inventory",category:"collection"}, {name:"DataStore Save",category:"progression"} ]`,
   inputSchema: z.object({
-    featureName: z.string().describe("The name of the feature created"),
+    featureName: z.string().describe("The name of the primary feature created"),
     description: z.string().describe("Brief description of what was created"),
     parentFeature: z.string().optional().describe("Parent feature ID if this is a sub-feature"),
     status: z.enum(["idea", "in-progress", "completed"]).optional().describe("Status of the feature"),
+    category: z.enum(["core", "economy", "progression", "collection", "combat", "quests", "social", "ui", "world"]).optional().describe("Mechanic category"),
+    dependencies: z.array(z.string()).optional().describe("IDs of mechanics this feature depends on"),
+    features: z.array(z.object({
+      name: z.string().describe("Feature/mechanic name"),
+      description: z.string().optional().describe("Short description"),
+      category: z.enum(["core", "economy", "progression", "collection", "combat", "quests", "social", "ui", "world"]).optional().describe("Mechanic category"),
+      status: z.enum(["idea", "in-progress", "completed", "discovered", "partial", "planned"]).optional().describe("Status"),
+    })).optional().describe("Additional related features to add as nodes on the map (up to 8 total)"),
   }),
-  execute: async ({ featureName, description, parentFeature, status = "completed" }) => {
+  execute: async ({ featureName, description, parentFeature, status = "completed", category = "core", dependencies = [], features = [] }) => {
+    // Hand off to the Game Map store so the graph actually updates.
+    const { useGameMapStore } = await import("@/stores/gameMap");
+    const store = useGameMapStore.getState();
+
+    const all = [{ name: featureName, description, status, category }, ...features].slice(0, 8);
+    const primaryId = store.addMechanic(
+      {
+        name: featureName,
+        description: description || `${featureName} game mechanic`,
+        category: category as MechanicCategoryLiteral,
+        status: status === "completed" ? "implemented" : status === "in-progress" ? "partial" : "planned",
+        confidence: 0.7,
+        source: "ai",
+        instances: [],
+        scripts: [],
+        remoteEvents: [],
+        guis: [],
+        evidence: [],
+        progress: status === "completed" ? 100 : status === "in-progress" ? 50 : 0,
+      },
+      dependencies
+    );
+
+    for (const f of all.slice(1)) {
+      store.addMechanic({
+        name: f.name,
+        description: f.description || `${f.name} mechanic`,
+        category: (f.category as MechanicCategoryLiteral) ?? "core",
+        status: f.status === "completed" ? "implemented" : f.status === "in-progress" ? "partial" : "planned",
+        confidence: 0.65,
+        source: "ai",
+        instances: [],
+        scripts: [],
+        remoteEvents: [],
+        guis: [],
+        evidence: [],
+        progress: f.status === "completed" ? 100 : 40,
+      }, [primaryId]);
+      store.linkMechanics(primaryId, useGameMapStore.getState().nodes.find((n) => n.name === f.name)?.id ?? "");
+    }
+
     return {
       success: true,
       featureName,
       description,
       parentFeature,
       status,
+      nodesAdded: all.length,
       _gameMapUpdate: true,
+    };
+  },
+})
+
+type MechanicCategoryLiteral = "core" | "economy" | "progression" | "collection" | "combat" | "quests" | "social" | "ui" | "world";
+
+export const gameMapScan = tool({
+  description: `Scan the connected Roblox Studio project and rebuild the Game Map from REAL project data.
+
+Inspects Workspace, ReplicatedStorage, ServerStorage, ServerScriptService, StarterGui,
+StarterPack and ReplicatedFirst, plus all RemoteEvents/Functions, Scripts/ModuleScripts
+and ScreenGuis. Detects actual game mechanics with evidence, categories, dependencies
+and statuses. Use this to answer "what systems are in my game", "what is missing", or
+to freshly populate the map when Studio is connected.
+
+Requires Roblox Studio to be connected. Returns the count of mechanics detected.`,
+  inputSchema: z.object({}),
+  execute: async () => {
+    const { useGameMapStore } = await import("@/stores/gameMap");
+    const result = await useGameMapStore.getState().scanConnectedProject();
+    if (!result.success) {
+      return { error: result.error || "Could not scan project" };
     }
+    return {
+      success: true,
+      mechanicsDetected: result.nodes,
+      message: `Scanned the connected project and detected ${result.nodes} game mechanics.`,
+      _gameMapScanned: true,
+    };
+  },
+})
+
+export const gameMapAddNode = tool({
+  description: `Add a single mechanic node to the Game Map graph with optional dependencies.
+
+Use when you want to record a planned or discovered mechanic without building it,
+or to link two mechanics that depend on each other. Does NOT build anything —
+it only updates the map.`,
+  inputSchema: z.object({
+    name: z.string().describe("Mechanic name"),
+    description: z.string().optional().describe("Short description"),
+    category: z.enum(["core", "economy", "progression", "collection", "combat", "quests", "social", "ui", "world"]).optional().describe("Mechanic category"),
+    status: z.enum(["discovered", "planned", "partial", "implemented", "verified", "missing"]).optional().describe("Status"),
+    dependencies: z.array(z.string()).optional().describe("IDs of mechanics this depends on"),
+  }),
+  execute: async ({ name, description, category = "core", status = "planned", dependencies = [] }) => {
+    const { useGameMapStore } = await import("@/stores/gameMap");
+    const store = useGameMapStore.getState();
+    const id = store.addMechanic({
+      name,
+      description: description || `${name} mechanic`,
+      category,
+      status,
+      confidence: 0.6,
+      source: "ai",
+      instances: [],
+      scripts: [],
+      remoteEvents: [],
+      guis: [],
+      evidence: [],
+      progress: status === "implemented" || status === "verified" ? 100 : status === "partial" ? 60 : status === "planned" ? 20 : 0,
+    }, dependencies);
+    return { success: true, id, name, category, status, dependencies };
   },
 })
 
@@ -1490,5 +1608,7 @@ export const robloxTools = {
 
   // Game Map tools
   game_map_update: gameMapUpdate,
+  game_map_scan: gameMapScan,
+  game_map_add_node: gameMapAddNode,
   game_map_suggest: gameMapSuggest,
 }
