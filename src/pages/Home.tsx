@@ -146,7 +146,6 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
   
   const [installMessage, setInstallMessage] = useState<string | null>(null);
   const [showManualPath, setShowManualPath] = useState(false);
-  const [toolboxOpen, setToolboxOpen] = useState(false);
 
   // Check plugin status on mount
   useEffect(() => {
@@ -404,6 +403,7 @@ function StatusBadge({ status }: { status: ConnectionStatus }) {
 }
 
 export function Home() {
+  const [toolboxOpen, setToolboxOpen] = useState(false);
   const [input, setInput] = useState("");
   const [activeChips, setActiveChips] = useState<ChipAction[]>([]);
   const [isImproving, setIsImproving] = useState(false);
