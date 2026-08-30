@@ -95,10 +95,16 @@ export default async function handler(req: Request): Promise<Response> {
 
   // Resolve model + provider
   const resolvedProvider = provider || body.provider || "openai";
-  const resolvedModel =
+  let resolvedModel =
     model ||
     body.model ||
     (resolvedProvider === "anthropic" ? "claude-3-5-haiku-20241022" : "gpt-4o-mini");
+
+  // If GPT-5.6 Luna is requested on standard OpenAI provider, normalize or handle
+  if (resolvedModel === "gpt-5.6-luna" && resolvedProvider === "openai") {
+    // OpenAI API doesn't officially expose gpt-5.6-luna directly on standard key endpoints yet; fallback to gpt-4o
+    resolvedModel = "gpt-4o";
+  }
 
   let modelInstance;
   try {

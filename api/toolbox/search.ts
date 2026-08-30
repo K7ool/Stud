@@ -276,18 +276,33 @@ export default async function handler(req: Request): Promise<Response> {
     results = searchResult.results;
     failed = searchResult.failed;
   } catch (e) {
-    return cors(new Response(JSON.stringify({ error: `Search failed: ${e}` }), {
-      status: 502, headers: { "Content-Type": "application/json" },
-    }));
+    console.warn(`[toolbox-search] search error:`, e);
+    failed = true;
   }
 
-  if (failed) {
-    return cors(new Response(JSON.stringify({
-      error: "Roblox catalog search is temporarily unavailable (rate limited). Please try again in a few moments.",
-      results: [],
-    }), {
-      status: 503, headers: { "Content-Type": "application/json" },
-    }));
+  if (failed || results.length === 0) {
+    // Graceful fallback to pre-curated popular assets matching query
+    try {
+      const { POPULAR_ASSETS } = await import("../../src/lib/toolbox/popular-assets");
+      const lower = q.toLowerCase();
+      const matched = POPULAR_ASSETS.filter(
+        (a) =>
+          (a.category.toLowerCase() === type.toLowerCase() || type === "Model") &&
+          (a.name.toLowerCase().includes(lower) || a.description.toLowerCase().includes(lower))
+      );
+      if (matched.length > 0) {
+        results = matched.map((m) => ({
+          id: m.id,
+          name: m.name,
+          creatorName: m.creator,
+          creatorId: 1,
+          price: 0,
+          assetType: m.category,
+        }));
+      }
+    } catch {
+      // ignore
+    }
   }
 
   // Backfill thumbnails if missing

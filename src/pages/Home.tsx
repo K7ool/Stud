@@ -36,11 +36,14 @@ import { useSettingsStore } from "@/stores/settings";
 import { useRobloxStore, ConnectionStatus } from "@/stores/roblox";
 import { usePluginStore } from "@/stores/plugin";
 import { useAuthStore } from "@/stores/auth";
+import { useUserAuthStore } from "@/stores/userAuth";
 import { useGameMapStore } from "@/stores/gameMap";
 import { useChat } from "@/lib/ai/providers";
 import { setAskUserHandler } from "@/lib/roblox/tools";
 import { getStudioSiteId } from "@/lib/roblox/client";
 import { ToolboxSearch } from "@/components/ToolboxSearch";
+import { AuthModal } from "@/components/auth/AuthModal";
+import { AdminDashboard } from "@/components/admin/AdminDashboard";
 import { autoDetectProject, setProjectPath, pickFolder } from "@/lib/file-ops";
 import { useAppShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { improvePrompt } from "@/lib/ai/prompt-improver";
@@ -50,7 +53,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Maximize2 } from "lucide-react";
+import { Maximize2, Shield, User, Coins } from "lucide-react";
 import { ArrowUp, Square, CheckCircle2, Download, FolderOpen, RefreshCw, Box, FileText, Globe, Play, ListTodo, Settings, Sparkles, Paperclip, X, Image, File, MessageSquarePlus, Trash2, Map, Lightbulb, Users } from "lucide-react";
 
 const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
@@ -421,6 +424,11 @@ function StatusBadge({ status, gameInfo }: { status: ConnectionStatus; gameInfo?
 
 export function Home() {
   const [toolboxOpen, setToolboxOpen] = useState(false);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [adminDashboardOpen, setAdminDashboardOpen] = useState(false);
+  const [creditAlertOpen, setCreditAlertOpen] = useState(false);
+
+  const { currentUser, deductCredit, hasCredits } = useUserAuthStore();
   const [input, setInput] = useState("");
   const [activeChips, setActiveChips] = useState<ChipAction[]>([]);
   const [isImproving, setIsImproving] = useState(false);
@@ -598,6 +606,15 @@ export function Home() {
   const handleSubmit = useCallback(async () => {
     if (!input.trim() || isStreaming) return;
 
+    // Check user credits before submitting
+    if (!hasCredits()) {
+      setCreditAlertOpen(true);
+      return;
+    }
+
+    // Deduct 1 credit for generation
+    deductCredit(1);
+
     const userMessage = input.trim();
 
     // Build context prefix based on active chips
@@ -704,7 +721,7 @@ export function Home() {
       setError(errorMessage);
       setStreaming(false);
     }
-  }, [input, isStreaming, messages, activeChips, addMessage, updateMessage, addToolCall, updateToolCall, setStreaming, setError, sendMessage]);
+  }, [input, isStreaming, messages, activeChips, addMessage, updateMessage, addToolCall, updateToolCall, setStreaming, setError, sendMessage, hasCredits, deductCredit]);
 
   const handleSuggestionClick = (suggestion: string) => {
     setInput(suggestion);
@@ -887,6 +904,36 @@ export function Home() {
             >
               <Map className="w-4 h-4" />
             </Button>
+
+            {/* User Account / Credits Pill */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-2 border-primary/20 bg-primary/5 hover:bg-primary/10 text-xs"
+              onClick={() => setAuthModalOpen(true)}
+              title="Account & Credits"
+            >
+              <Coins className="w-3.5 h-3.5 text-amber-500" />
+              <span>{currentUser?.unlimitedCredits ? "∞" : currentUser?.credits ?? 0}</span>
+              <span className="text-muted-foreground">|</span>
+              <User className="w-3.5 h-3.5 text-primary" />
+              <span className="font-medium max-w-[80px] truncate">{currentUser?.username || "Guest"}</span>
+            </Button>
+
+            {/* Admin Dashboard (If admin) */}
+            {currentUser?.isAdmin && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1 text-xs border-amber-500/30 text-amber-500 hover:bg-amber-500/10"
+                onClick={() => setAdminDashboardOpen(true)}
+                title="Admin Control Panel"
+              >
+                <Shield className="w-3.5 h-3.5" />
+                Admin
+              </Button>
+            )}
+
             <SettingsDialog />
           </div>
         </header>
@@ -1216,6 +1263,36 @@ export function Home() {
           >
             <Map className="w-4 h-4" />
           </Button>
+
+          {/* User Account / Credits Pill */}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-2 border-primary/20 bg-primary/5 hover:bg-primary/10 text-xs"
+            onClick={() => setAuthModalOpen(true)}
+            title="Account & Credits"
+          >
+            <Coins className="w-3.5 h-3.5 text-amber-500" />
+            <span>{currentUser?.unlimitedCredits ? "∞" : currentUser?.credits ?? 0}</span>
+            <span className="text-muted-foreground">|</span>
+            <User className="w-3.5 h-3.5 text-primary" />
+            <span className="font-medium max-w-[80px] truncate">{currentUser?.username || "Guest"}</span>
+          </Button>
+
+          {/* Admin Dashboard (If admin) */}
+          {currentUser?.isAdmin && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1 text-xs border-amber-500/30 text-amber-500 hover:bg-amber-500/10"
+              onClick={() => setAdminDashboardOpen(true)}
+              title="Admin Control Panel"
+            >
+              <Shield className="w-3.5 h-3.5" />
+              Admin
+            </Button>
+          )}
+
           <div className="h-4 w-px bg-border mx-1" />
           <ChatActions
             onClear={clearMessages}
@@ -1541,6 +1618,60 @@ export function Home() {
               className="max-h-[80vh] mx-auto object-contain"
             />
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Toolbox Search */}
+      <ToolboxSearch
+        open={toolboxOpen}
+        onOpenChange={setToolboxOpen}
+      />
+
+      {/* Auth Modal (Login / Register) */}
+      <AuthModal
+        open={authModalOpen}
+        onOpenChange={setAuthModalOpen}
+        onOpenAdmin={() => {
+          setAuthModalOpen(false);
+          setAdminDashboardOpen(true);
+        }}
+      />
+
+      {/* Admin Dashboard */}
+      <AdminDashboard
+        open={adminDashboardOpen}
+        onOpenChange={setAdminDashboardOpen}
+      />
+
+      {/* Out of Credits Alert Dialog */}
+      <Dialog open={creditAlertOpen} onOpenChange={setCreditAlertOpen}>
+        <DialogContent className="max-w-md">
+          <DialogTitle className="flex items-center gap-2 text-amber-500">
+            <Coins className="w-5 h-5" />
+            No Credits Remaining
+          </DialogTitle>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              You have used all your AI credits. Please log in to your account or visit the Admin Dashboard to top up or enable unlimited credits.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setCreditAlertOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="default"
+                size="sm"
+                className="gap-2"
+                onClick={() => {
+                  setCreditAlertOpen(false);
+                  setAuthModalOpen(true);
+                }}
+              >
+                <User className="w-4 h-4" />
+                Account / Top-up
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 
