@@ -40,6 +40,7 @@ import { useGameMapStore } from "@/stores/gameMap";
 import { useChat } from "@/lib/ai/providers";
 import { setAskUserHandler } from "@/lib/roblox/tools";
 import { getStudioSiteId } from "@/lib/roblox/client";
+import { ToolboxSearch } from "@/components/ToolboxSearch";
 import { autoDetectProject, setProjectPath, pickFolder } from "@/lib/file-ops";
 import { useAppShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { improvePrompt } from "@/lib/ai/prompt-improver";
@@ -145,6 +146,7 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
   
   const [installMessage, setInstallMessage] = useState<string | null>(null);
   const [showManualPath, setShowManualPath] = useState(false);
+  const [toolboxOpen, setToolboxOpen] = useState(false);
 
   // Check plugin status on mount
   useEffect(() => {
@@ -977,7 +979,19 @@ export function Home() {
                   </div>
                   <div className="flex items-center gap-2">
                     <ModelSelector disabled={!hasConfiguredProvider} />
-                    {/* Improve Prompt Button */}
+{/* Toolbox Button */}
+                <PromptInputAction tooltip="Open Toolbox (search Creator Store)">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-lg text-primary hover:text-primary hover:bg-primary/10"
+                    onClick={() => setToolboxOpen(true)}
+                  >
+                    <Box className="h-4 w-4" />
+                  </Button>
+                </PromptInputAction>
+
+                {/* Improve Prompt Button */}
                     <PromptInputAction tooltip="Improve prompt for Stud">
                       <Button
                         variant="ghost"
@@ -1051,6 +1065,7 @@ export function Home() {
   // Chat view
   return (
     <div className="h-screen flex flex-col bg-background">
+      <ToolboxSearch open={toolboxOpen} onOpenChange={setToolboxOpen} onInserted={() => setToolboxOpen(false)} />
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-border/50 bg-card/50 backdrop-blur-sm">
         <div className="flex items-center gap-3">

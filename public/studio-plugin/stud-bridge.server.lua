@@ -24,7 +24,7 @@ local PLUGIN_DISPLAY_NAME = "Stud"
 -- These are placeholders; the real values come from PLUGIN_URL_OVERRIDE
 -- (set when the user downloads the plugin from the website).
 local PLUGIN_RELAY_BASE = "https://stud-weld.vercel.app"
-local PLUGIN_SITE_ID = ""
+local PLUGIN_SITE_ID = "fnnu1i3pdqxr0hna"
 local PLUGIN_URL_OVERRIDE = ""  -- e.g. "https://.../api/stud/cmd?site=abc123"
 local POLL_URL
 local RESULT_URL
@@ -748,6 +748,56 @@ handlers["/selection/get"] = function()
 	return results
 end
 
+handlers["/asset/insert"] = function(data)
+	local InsertService = game:GetService("InsertService")
+	local assetId = tonumber(data.assetId)
+	if not assetId then
+		error("Invalid assetId")
+	end
+
+	local parent = game.Workspace
+	if data.parentPath then
+		local p = getInstanceFromPath(data.parentPath)
+		if p then parent = p end
+	end
+
+	local selected = Selection:Get()
+	local firstSelected = selected[1]
+
+	local models = InsertService:LoadAsset(assetId)
+	if not models or #models == 0 then
+		error("InsertService returned no models for assetId " .. assetId)
+	end
+
+	local root = models
+	root.Parent = parent
+
+	if #models == 1 then
+		local only = models[1] or models:GetChildren()[1]
+		if only then
+			if only:IsA("Decal") or only:IsA("Texture") or only:IsA("SurfaceAppearance") then
+				if firstSelected and firstSelected:IsA("BasePart") then
+					only.Parent = firstSelected
+				end
+			elseif only:IsA("Sound") then
+				if firstSelected and firstSelected:IsA("BasePart") then
+					only.Parent = firstSelected
+				else
+					local sounds = game.Workspace:FindFirstChild("Sounds")
+					if not sounds then
+						sounds = Instance.new("Folder")
+						sounds.Name = "Sounds"
+						sounds.Parent = game.Workspace
+					end
+					only.Parent = sounds
+				end
+			end
+		end
+	end
+
+	return { path = getInstancePath(root) }
+end
+
 handlers["/code/run"] = function(data)
 	local output = {}
 	local oldPrint = print
@@ -773,6 +823,7 @@ local modifyingPaths = {
 	["/script/edit"] = true,
 	["/instance/set"] = true,
 	["/instance/create"] = true,
+	["/asset/insert"] = true,
 	["/instance/delete"] = true,
 	["/instance/clone"] = true,
 	["/instance/move"] = true,
@@ -799,6 +850,7 @@ local actionNames = {
 	["/instance/bulk-set"] = "Bulk Update",
 	["/instance/search"] = "Search",
 	["/selection/get"] = "Get Selection",
+	["/asset/insert"] = "Insert Asset",
 	["/code/run"] = "Run Code",
 }
 

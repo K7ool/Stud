@@ -542,6 +542,62 @@ handlers["/selection/get"] = function()
 	for _, i in ipairs(Selection:Get()) do table.insert(r, instanceToInfo(i, false)) end
 	return r
 end
+handlers["/asset/insert"] = function(data)
+	local InsertService = game:GetService("InsertService")
+	local assetId = tonumber(data.assetId)
+	if not assetId then error("Invalid assetId") end
+
+	-- Determine target parent
+	local parent = game.Workspace
+	if data.parentPath then
+		parent = getInstanceFromPath(data.parentPath)
+		if not parent then parent = game.Workspace end
+	end
+
+	-- Try to use the user's selection for decals/sounds
+	local selected = Selection:Get()
+	local firstSelected = selected[1]
+
+	local models = InsertService:LoadAsset(assetId)
+	if not models or #models == 0 then
+		error("InsertService returned no models for assetId " .. assetId)
+	end
+
+	local inserted = {}
+	for _, model in ipairs(models:GetDescendants()) do
+		table.insert(inserted, model)
+	end
+	table.insert(inserted, models)
+
+	local root = models
+	root.Parent = parent
+
+	-- If this is a single Decal/Texture/Sound, try to relocate it
+	if #models == 1 then
+		local only = models[1] or models:GetChildren()[1]
+		if only then
+			if only:IsA("Decal") or only:IsA("Texture") or only:IsA("SurfaceAppearance") then
+				if firstSelected and firstSelected:IsA("BasePart") then
+					only.Parent = firstSelected
+				end
+			elseif only:IsA("Sound") then
+				if firstSelected and firstSelected:IsA("BasePart") then
+					only.Parent = firstSelected
+				else
+					local sounds = game.Workspace:FindFirstChild("Sounds")
+					if not sounds then
+						sounds = Instance.new("Folder")
+						sounds.Name = "Sounds"
+						sounds.Parent = game.Workspace
+					end
+					only.Parent = sounds
+				end
+			end
+		end
+	end
+
+	return { path = getInstancePath(root) }
+end
 handlers["/code/run"] = function(data)
 	local out = {}
 	local oldPrint = print
@@ -564,6 +620,7 @@ local modifyingPaths = {
 	["/instance/create"] = true, ["/instance/delete"] = true, ["/instance/clone"] = true,
 	["/instance/move"] = true, ["/instance/bulk-create"] = true,
 	["/instance/bulk-delete"] = true, ["/instance/bulk-set"] = true, ["/code/run"] = true,
+	["/asset/insert"] = true,
 }
 
 local actionNames = {
@@ -574,7 +631,8 @@ local actionNames = {
 	["/instance/clone"] = "Clone Instance", ["/instance/move"] = "Move Instance",
 	["/instance/bulk-create"] = "Bulk Create", ["/instance/bulk-delete"] = "Bulk Delete",
 	["/instance/bulk-set"] = "Bulk Update", ["/instance/search"] = "Search",
-	["/selection/get"] = "Get Selection", ["/code/run"] = "Run Code",
+	["/selection/get"] = "Get Selection", ["/asset/insert"] = "Insert Asset",
+	["/code/run"] = "Run Code",
 }
 
 local function handleRequest(request)

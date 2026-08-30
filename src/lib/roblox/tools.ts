@@ -1214,7 +1214,7 @@ export const robloxTools = {
   roblox_bulk_delete: robloxBulkDelete,
   roblox_bulk_set_property: robloxBulkSetProperty,
 
-  // Toolbox tools
+  // Toolbox tools (existing — handles both search and insert)
   roblox_toolbox_search: robloxToolboxSearch,
   roblox_insert_asset: robloxInsertAsset,
 
