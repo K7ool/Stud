@@ -549,19 +549,13 @@ local function isDescendantOf(target, ancestor)
 	return false
 end
 
-local SCRIPT_TYPES = {
-	Script = true,
-	LocalScript = true,
-	ModuleScript = true,
-}
-
+-- Deduplication: reuse an existing child with the same name AND className so
+-- repeated "create" calls (scripts, parts, models, values...) never leave
+-- accidental duplicates behind. Only applies when a name is supplied.
 local function findExistingInstance(parent, name, className)
-	local child = parent:FindFirstChild(name)
-	if child then return child end
-	if SCRIPT_TYPES[className] then
-		for _, c in ipairs(parent:GetChildren()) do
-			if c.Name == name and c.ClassName == className then return c end
-		end
+	if not name or not className then return nil end
+	for _, c in ipairs(parent:GetChildren()) do
+		if c.Name == name and c.ClassName == className then return c end
 	end
 	return nil
 end
@@ -570,25 +564,17 @@ end
 --
 -- ScriptEditorService:UpdateSourceAsync yields while the Script Editor
 -- processes the change and can stall indefinitely when the script is open or
--- the editor is busy (undo waypoints alone don't cause it, but the editor's
--- in-memory checkout does). We run it on its own thread with a watchdog; if it
--- doesn't complete in time we fall back to the synchronous, non-yielding
--- `instance.Source = newSource` assignment, which never blocks.
+-- the editor is busy. We never wait on it: first run it on its own thread as
+-- a best-effort editor integration (it cannot stall the handler or the poll
+-- loop), then commit the change synchronously with the non-yielding
+-- instance.Source assignment so the command always responds.
 local function updateScriptSource(instance, newSource)
-	local useEditor = ScriptEditorService and ScriptEditorService:UpdateSourceAsync
-	if useEditor then
-		local done = false
-		local watchdog = task.delay(4, function()
-			done = true
+	if ScriptEditorService and ScriptEditorService:UpdateSourceAsync then
+		task.spawn(function()
+			pcall(function()
+				ScriptEditorService:UpdateSourceAsync(instance, function() return newSource end)
+			end)
 		end)
-		local ok, err = pcall(function()
-			ScriptEditorService:UpdateSourceAsync(instance, function() return newSource end)
-		end)
-		task.cancel(watchdog)
-		if ok and not done then return true, nil end
-		if err and tostring(err) ~= "" then
-			print("[stud-bridge] UpdateSourceAsync failed, falling back to .Source: " .. tostring(err))
-		end
 	end
 	local ok, err = pcall(function()
 		instance.Source = newSource
@@ -771,8 +757,9 @@ handlers["/instance/create"] = function(data)
 	if not parent then error("Parent not found: " .. data.parent) end
 	local name = data.name or ("New" .. data.className)
 
-	-- Deduplication: for scripts, check if one with same name already exists
-	if SCRIPT_TYPES[data.className] then
+	-- Deduplication: reuse an existing instance with the same name+class when a
+	-- name was provided, so repeated creates never leave duplicates behind.
+	if data.name then
 		local existing = findExistingInstance(parent, name, data.className)
 		if existing then
 			return { path = getInstancePath(existing), reused = true }
@@ -828,9 +815,10 @@ handlers["/instance/bulk-create"] = function(data)
 			table.insert(skipped, { item = item, reason = "Parent not found" })
 		else
 			local name = item.name or ("New" .. item.className)
-			-- Deduplication: for scripts, reuse an existing instance with the
-			-- same name+class so repeated creates don't leave duplicates.
-			if SCRIPT_TYPES[item.className] then
+			-- Deduplication: reuse an existing instance with the same name+class
+			-- (when a name was provided) so repeated creates don't leave
+			-- duplicates behind, for scripts, parts, models and any other class.
+			if item.name then
 				local existing = findExistingInstance(parent, name, item.className)
 				if existing then
 					table.insert(created, getInstancePath(existing))
@@ -1043,8 +1031,14 @@ local function handleRequest(request)
 	updateUI()
 	local success, result = pcall(handler, data)
 	local actionName = actionNames[path] or path
-	if success then addActivity(actionName, "success")
-	else addActivity(actionName, "error", tostring(result)) end
+	-- Only surface meaningful work in the activity feed. Health-check reads
+	-- (/ping, /game/info) are polled frequently by the web app and would
+	-- otherwise flood the Recent Activity list with the same entry.
+	if success and (modifyingPaths[path] or (path ~= "/ping" and path ~= "/game/info")) then
+		addActivity(actionName, "success")
+	elseif not success then
+		addActivity(actionName, "error", tostring(result))
+	end
 	isProcessing = false
 	updateUI()
 

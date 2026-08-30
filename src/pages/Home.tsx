@@ -30,6 +30,8 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { EmptyState } from "@/components/EmptyState";
 import { IntentSuggestions } from "@/components/chat/IntentSuggestions";
 import { ConnectionPopup } from "@/components/chat/ConnectionPopup";
+import { Sidebar } from "@/components/chat/Sidebar";
+import { MemoryDialog } from "@/components/chat/MemoryDialog";
 import { detectIntent, parseSlashCommand } from "@/lib/intents";
 import { useChatStore, Attachment } from "@/stores/chat";
 import { useSettingsStore } from "@/stores/settings";
@@ -38,7 +40,9 @@ import { usePluginStore } from "@/stores/plugin";
 import { useAuthStore } from "@/stores/auth";
 import { useUserAuthStore } from "@/stores/userAuth";
 import { useGameMapStore } from "@/stores/gameMap";
+import { useMemoryStore } from "@/stores/memory";
 import { useChat } from "@/lib/ai/providers";
+import { extractMemories, generateConversationTitle } from "@/lib/ai/memory-extract";
 import { setAskUserHandler } from "@/lib/roblox/tools";
 import { getStudioSiteId } from "@/lib/roblox/client";
 import { autoDetectProject, setProjectPath, pickFolder } from "@/lib/file-ops";
@@ -50,7 +54,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Maximize2, Shield, User, Coins } from "lucide-react";
+import { Maximize2, Shield, User, Coins, PanelLeft } from "lucide-react";
 import { ArrowUp, Square, CheckCircle2, Download, FolderOpen, RefreshCw, Box, FileText, Globe, Play, ListTodo, Settings, Sparkles, Paperclip, X, Image, File, MessageSquarePlus, Trash2, Map, Lightbulb, Users } from "lucide-react";
 
 const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
@@ -470,6 +474,8 @@ export function Home() {
   const [showGameMap, setShowGameMap] = useState(false);
   const [dismissConnection, setDismissConnection] = useState(false);
   const [connectionRetrying, setConnectionRetrying] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
 
   const rootFeature = useGameMapStore((s) => s.rootFeature);
   const setRootFeature = useGameMapStore((s) => s.setRootFeature);
@@ -506,6 +512,44 @@ export function Home() {
     const cleanup = startPolling();
     return cleanup;
   }, [startPolling]);
+
+  // Hydrate chat history + memory from the server on first mount. Local data
+  // (already in localStorage) is shown immediately; the server list is merged
+  // in once it lands. Neither call blocks the first user message.
+  useEffect(() => {
+    useChatStore.getState().hydrateFromServer().catch(() => {});
+    useMemoryStore.getState().hydrate().catch(() => {});
+  }, []);
+
+  // URL routing: /chat/:id selects a conversation, "/" or unknown opens the
+  // most recent. Switching chats pushes to history so the back button works.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const apply = () => {
+      const m = window.location.pathname.match(/^\/chat\/([\w-]+)/);
+      const target = m ? m[1] : null;
+      const state = useChatStore.getState();
+      if (target && state.sessions.find((s) => s.id === target) && state.currentSessionId !== target) {
+        state.switchSession(target);
+      } else if (!target && state.sessions.length > 0 && !state.currentSessionId) {
+        state.switchSession(state.sessions[0].id);
+      }
+    };
+    apply();
+    const onPop = () => apply();
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Reflect the active session in the URL.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!currentSessionId) return;
+    const want = `/chat/${currentSessionId}`;
+    if (window.location.pathname !== want) {
+      window.history.replaceState(window.history.state, "", want);
+    }
+  }, [currentSessionId]);
 
   // Fetch game info once connected
   useEffect(() => {
@@ -627,10 +671,61 @@ export function Home() {
       return;
     }
 
+    const userMessage = input.trim();
+
+    // Memory management shortcuts. Intercept "remember that …" and
+    // "forget …" so they never reach the AI: store/delete the matching
+    // memory and reply with a short confirmation in a fresh assistant
+    // message. This is a deterministic, low-cost path — no LLM call.
+    const rememberMatch = userMessage.match(/^remember(?:\s+that)?\s*[:\-]?\s*(.+)$/i);
+    const forgetAllMatch = userMessage.match(/^forget\s+(?:everything|all(?:\s+memories)?)$/i);
+    const forgetMatch = !forgetAllMatch && userMessage.match(/^forget\s+(?:about\s+|that\s+)?(.+)$/i);
+    if (rememberMatch || forgetAllMatch || forgetMatch) {
+      const projectId = getStudioSiteId() || "default";
+      const sessionId = useChatStore.getState().currentSessionId || useChatStore.getState().createSession();
+      addMessage({ role: "user", content: userMessage });
+      try {
+        if (forgetAllMatch) {
+          await useMemoryStore.getState().forgetAll();
+          addMessage({ role: "assistant", content: "Forgot all stored memories." });
+        } else if (forgetMatch) {
+          const target = forgetMatch[1].trim();
+          const all = useMemoryStore.getState().memories;
+          const matches = all.filter((m) => `${m.key} ${m.value}`.toLowerCase().includes(target.toLowerCase()));
+          await Promise.all(matches.map((m) => useMemoryStore.getState().removeMemory(m.id)));
+          addMessage({
+            role: "assistant",
+            content: matches.length
+              ? `Forgot ${matches.length} memor${matches.length === 1 ? "y" : "ies"} matching "${target}".`
+              : `No memory matched "${target}".`,
+          });
+        } else {
+          const value = rememberMatch![1].trim();
+          const key = value
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "_")
+            .replace(/^_+|_+$/g, "")
+            .slice(0, 60) || "fact";
+          await useMemoryStore.getState().addMemory({
+            scope: "project",
+            category: "IMPORTANT_FACTS",
+            key,
+            value,
+            confidence: 0.9,
+            projectId,
+            sourceConversationId: sessionId,
+          });
+          addMessage({ role: "assistant", content: `Got it. I'll remember: ${value}` });
+        }
+      } catch (e) {
+        addMessage({ role: "assistant", content: `Could not update memory: ${(e as Error).message}` });
+      }
+      setInput("");
+      return;
+    }
+
     // Deduct 1 credit for generation
     deductCredit(1);
-
-    const userMessage = input.trim();
 
     // Build context prefix based on active chips
     const prefixes: string[] = [];
@@ -667,9 +762,26 @@ export function Home() {
     setStreaming(true);
     setError(null);
 
+    // Capture session ID so async work (title, memory) targets the right convo.
+    const sessionId = useChatStore.getState().currentSessionId;
+
     try {
+      // Pull a small, relevant slice of memory for this turn. Never blocks
+      // the response — a stale or empty list just means we send less.
+      const projectId = getStudioSiteId() || "default";
+      const memoryLines = useMemoryStore.getState().toPromptLines(
+        useMemoryStore.getState().relevantFor(userMessage, 6).filter(
+          (m) => m.scope === "global" || m.projectId === projectId
+        )
+      );
+      const systemExtension = memoryLines
+        ? `Relevant memory (use only if it improves your answer; do not mention unless asked):\n${memoryLines}`
+        : undefined;
+
       const chatMessages = [
-        ...messages.map((m) => ({ role: m.role, content: m.content })),
+        ...messages
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
         { role: "user" as const, content: fullMessage },
       ];
 
@@ -686,6 +798,7 @@ export function Home() {
       };
 
       await sendMessage(chatMessages, {
+        systemExtension,
         onToken: (token) => {
           fullText += token;
           if (rafId === null) {
@@ -733,6 +846,39 @@ export function Home() {
         onFinish: () => {
           console.log("[Home] Stream finished, total length:", fullText.length);
           setStreaming(false);
+          // Async title generation: only for the very first user message of
+          // a session, and only if the current title is the placeholder.
+          if (sessionId) {
+            const session = useChatStore.getState().sessions.find((s) => s.id === sessionId);
+            const isPlaceholderTitle = !session || /^New chat$|^Chat \d/.test(session.title);
+            if (isPlaceholderTitle) {
+              generateConversationTitle(userMessage, fullText)
+                .then((title) => {
+                  if (title) useChatStore.getState().updateSessionTitle(sessionId, title);
+                })
+                .catch(() => {});
+            }
+            // Async memory extraction. Never blocks; never throws.
+            const projectId = getStudioSiteId() || "default";
+            extractMemories({ userMessage, assistantMessage: fullText })
+              .then((mems) => {
+                if (!mems) return;
+                for (const m of mems) {
+                  useMemoryStore.getState()
+                    .addMemory({
+                      scope: m.scope,
+                      category: m.category as never,
+                      key: m.key,
+                      value: m.value,
+                      confidence: m.confidence,
+                      projectId: m.scope === "project" ? projectId : null,
+                      sourceConversationId: sessionId,
+                    })
+                    .catch(() => {});
+                }
+              })
+              .catch(() => {});
+          }
         },
         onError: (error) => {
           console.error("[Home] Stream error:", error);
@@ -854,6 +1000,16 @@ export function Home() {
         {/* Header */}
         <header className="flex items-center justify-between px-6 py-4 border-b border-border/50">
           <div className="flex items-center gap-4">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 -ml-2"
+              onClick={() => setSidebarOpen((v) => !v)}
+              title="Toggle sidebar"
+              aria-label="Toggle sidebar"
+            >
+              <PanelLeft className="w-4 h-4" />
+            </Button>
             <Logo />
             {/* Session Switcher */}
             <div className="relative group">
@@ -1023,10 +1179,11 @@ export function Home() {
             {/* Welcome message */}
             <div className="text-center space-y-2">
               <h1 className="text-3xl font-heading text-foreground">
-                What would you like to build?
+                What are you building today?
               </h1>
               <p className="text-muted-foreground">
-                I can help you create scripts, design systems, and build games in Roblox Studio.
+                Build, debug, analyze, and improve your Roblox game — your AI
+                Roblox development assistant.
               </p>
             </div>
 
@@ -1209,6 +1366,16 @@ export function Home() {
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-border/50 bg-card/50 backdrop-blur-sm">
         <div className="flex items-center gap-3">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 -ml-2"
+            onClick={() => setSidebarOpen((v) => !v)}
+            title="Toggle sidebar"
+            aria-label="Toggle sidebar"
+          >
+            <PanelLeft className="w-4 h-4" />
+          </Button>
           <LogoMark className="w-8 h-8" />
           <span className="text-lg font-logo">Stud</span>
           <div className="h-4 w-px bg-border mx-1" />
@@ -1734,6 +1901,28 @@ export function Home() {
       </Dialog>
 
       {renderOverlays()}
+
+      {/* Persistent sidebar (slide-in) */}
+      <div
+        className={cn(
+          "fixed inset-y-0 left-0 z-40 transition-transform duration-200 ease-out",
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        )}
+      >
+        <Sidebar
+          onOpenMemory={() => setMemoryOpen(true)}
+          onClose={() => setSidebarOpen(false)}
+        />
+      </div>
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/30 backdrop-blur-sm"
+          onClick={() => setSidebarOpen(false)}
+          aria-label="Close sidebar"
+        />
+      )}
+
+      <MemoryDialog open={memoryOpen} onOpenChange={setMemoryOpen} />
     </div>
   );
 }

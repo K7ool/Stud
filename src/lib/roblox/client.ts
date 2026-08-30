@@ -25,6 +25,12 @@ const WEB_TIMEOUT_MS = 20_000;
 const TIMEOUT_MS = 60_000;
 const RESULT_POLL_MS = 100;
 
+// A ping only needs to confirm the plugin is alive. A short deadline turns
+// "no plugin listening" into a fast failure instead of a 20s stall, and the
+// result is cached so the 5s health polls don't issue a relay round-trip each.
+const PING_TIMEOUT_MS = 2_500;
+const PING_CACHE_MS = 4_000;
+
 const isWebMode =
   typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
 
@@ -55,7 +61,7 @@ export async function studioRequest<T>(
   data?: object,
 ): Promise<StudioResponse<T>> {
   if (isWebMode) {
-    return studioRequestViaRelay<T>(endpoint, data);
+    return studioRequestViaRelay<T>(endpoint, data, WEB_TIMEOUT_MS);
   }
   return studioRequestViaLocal<T>(endpoint, data);
 }
@@ -63,6 +69,7 @@ export async function studioRequest<T>(
 async function studioRequestViaRelay<T>(
   endpoint: string,
   data?: object,
+  timeoutMs: number = WEB_TIMEOUT_MS,
 ): Promise<StudioResponse<T>> {
   const site = getSiteId();
   if (!site) {
@@ -96,7 +103,7 @@ async function studioRequestViaRelay<T>(
   let sawResult = false;
 
   // Poll for result
-  const deadline = Date.now() + WEB_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, RESULT_POLL_MS));
     try {
@@ -179,9 +186,20 @@ const CONN_TTL_MS = 1_500;
 
 export async function isStudioConnected(): Promise<boolean> {
   if (isWebMode) {
-    // We can't know for sure without polling, but assume yes if a siteId
-    // exists. The actual call will fail fast if no plugin is listening.
-    return !!getSiteId();
+    // In web mode we can't see the relay directly, so confirm the plugin is
+    // actually there with a real /ping round-trip. Short timeout + cache so the
+    // 5s health polls don't each pay a full relay push/poll cycle.
+    if (_connState && Date.now() - _connState.at < PING_CACHE_MS) {
+      return _connState.connected;
+    }
+    const pong = await studioRequestViaRelay<{ status: string }>(
+      "/ping",
+      undefined,
+      PING_TIMEOUT_MS,
+    );
+    const connected = pong.success;
+    _connState = { connected, at: Date.now() };
+    return connected;
   }
 
   // Short-lived cache so bursts of concurrent tool calls do not each pay a

@@ -213,7 +213,24 @@ When using tools:
 - Be careful with delete operations - they cannot be undone
 - After completing tool calls, ALWAYS provide a summary to the user
 
-Always provide clean, well-commented code following Roblox conventions.`;
+Always provide clean, well-commented code following Roblox conventions.
+
+PERSISTENT MEMORY:
+- You may receive a "Relevant memory" section in this prompt containing
+  durable facts the user has chosen to remember. Use it when it improves
+  your answer; ignore it when it is irrelevant to the current question.
+- Do NOT mention the memory system, retrieval, or storage implementation
+  to the user unless they explicitly ask. Treat memory as natural context.
+- Do NOT invent memories. If a fact isn't in the "Relevant memory" section
+  and isn't observable in the current project, don't claim to "remember" it.
+- Prefer current, observable project state over stale memory. When memory
+  conflicts with what you can see in the project now, trust the project.
+- Do NOT treat temporary, in-conversation details (e.g. "let's try X this
+  once") as permanent facts.
+- If the user says "remember that …" / "forget …" / "remember this", act on
+  it: save the fact (or delete the matching memory) without re-confirming.
+- Keep memory references terse. Inject only the slice that is relevant to
+  the current message; do not dump every stored memory into context.`;
 
 export interface ToolCallEvent {
   id: string;
@@ -239,10 +256,11 @@ export interface ChatOptions extends ChatCallbacks {
   provider: ProviderType;
   apiKey: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
+  systemExtension?: string;
 }
 
 export async function chat(options: ChatOptions) {
-  const { model, provider, apiKey, messages, onToken, onToolCall, onToolResult, onFinish, onError } = options;
+  const { model, provider, apiKey, messages, onToken, onToolCall, onToolResult, onFinish, onError, systemExtension } = options;
 
   console.log("[Chat] Starting chat with:", { model, provider, messageCount: messages.length });
 
@@ -250,7 +268,7 @@ export async function chat(options: ChatOptions) {
     // Use Codex chat for ChatGPT Plus/Pro (bypasses CORS via Tauri HTTP plugin)
     if (provider === "codex") {
       console.log("[Chat] Using Codex chat for ChatGPT Plus/Pro");
-      return codexChat(model, messages, { onToken, onToolCall, onToolResult, onFinish, onError });
+      return codexChat(model, messages, { onToken, onToolCall, onToolResult, onFinish, onError, systemExtension });
     }
 
     // For OpenAI/Anthropic, use standard AI SDK
@@ -260,7 +278,7 @@ export async function chat(options: ChatOptions) {
 
     const result = streamText({
       model: providerInstance(model),
-      system: ROBLOX_SYSTEM_PROMPT,
+      system: systemExtension ? `${ROBLOX_SYSTEM_PROMPT}\n\n${systemExtension}` : ROBLOX_SYSTEM_PROMPT,
       tools: robloxTools,
       stopWhen: stepCountIs(40), // Cap at 40 steps for responsive replies
       messages: messages.map((m) => ({
@@ -322,7 +340,7 @@ export function useChat() {
 
   const sendMessage = async (
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    callbacks?: ChatCallbacks
+    callbacks?: ChatCallbacks & { systemExtension?: string }
   ) => {
     // Determine provider and auth method
     let provider: ProviderType;

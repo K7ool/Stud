@@ -26,6 +26,7 @@ export interface CodexChatCallbacks {
   onToolResult?: (toolResult: { id: string; output: unknown }) => void;
   onFinish?: (text: string) => void;
   onError?: (error: Error) => void;
+  systemExtension?: string;
 }
 
 interface ToolCall {
@@ -147,7 +148,9 @@ async function makeCodexRequest(
   // Build request body - always send full input history
   const body = {
     model,
-    instructions: ROBLOX_SYSTEM_PROMPT,
+    instructions: callbacks?.systemExtension
+      ? `${ROBLOX_SYSTEM_PROMPT}\n\n${callbacks.systemExtension}`
+      : ROBLOX_SYSTEM_PROMPT,
     input,
     tools,
     stream: true,
