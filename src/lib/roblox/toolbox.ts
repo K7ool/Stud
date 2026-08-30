@@ -29,27 +29,68 @@ export interface ToolboxSearchResult {
 export type AssetCategory = "Model" | "Decal" | "Audio" | "Plugin" | "MeshPart";
 
 // ---------------------------------------------------------------------------
-// Web mode: uses the edge proxy (/api/toolbox/search)
+// Web mode: server proxy → browser direct → pre-curated popular assets
 // ---------------------------------------------------------------------------
+
+const CATEGORY_TO_ASSET_TYPE: Record<string, number> = {
+  Model: 10,
+  Decal: 13,
+  Audio: 3,
+  Plugin: 38,
+  MeshPart: 40,
+};
+
 async function webSearchToolbox(
   query: string,
   category: AssetCategory,
   limit: number
 ): Promise<ToolboxSearchResult> {
-  const url = `/api/toolbox/search?q=${encodeURIComponent(query)}&type=${encodeURIComponent(category)}&limit=${limit}`;
-  let errorMessage: string | undefined;
+  // Tier 1: Try server-side proxy (has caching, uses server IPs)
+  const proxyResult = await webSearchViaProxy(query, category, limit);
+  if (proxyResult.assets.length > 0) return proxyResult;
+
+  // Tier 2: Try direct browser search (bypasses Vercel, uses user's IP)
+  const directResult = await webSearchDirectBrowser(query, category, limit);
+  if (directResult.assets.length > 0) return directResult;
+
+  // Tier 3: Fall back to pre-curated popular assets
+  const { searchPopularAssets, POPULAR_ASSETS } = await import("@/lib/toolbox/popular-assets");
+  const popular = searchPopularAssets(query, category);
+  const curated = popular.slice(0, Math.min(limit, 50));
+
+  if (curated.length > 0) {
+    const assets = curated.map((a) => ({
+      id: a.id,
+      name: a.name,
+      description: a.description,
+      creatorName: a.creator,
+      creatorId: 0,
+      thumbnailUrl: undefined,
+      favoriteCount: 0,
+      created: "",
+      updated: "",
+    }));
+    return {
+      assets,
+      error: "Live search unavailable — showing popular assets instead. You can still insert any of these.",
+    };
+  }
+
+  return {
+    assets: [],
+    error: "Search unavailable. Try again later or use a different keyword.",
+  };
+}
+
+async function webSearchViaProxy(
+  query: string,
+  category: AssetCategory,
+  limit: number
+): Promise<ToolboxSearchResult> {
   try {
+    const url = `/api/toolbox/search?q=${encodeURIComponent(query)}&type=${encodeURIComponent(category)}&limit=${limit}`;
     const res = await fetch(url);
-    if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
-      try {
-        const errBody = (await res.json()) as { error?: string };
-        if (errBody?.error) msg = errBody.error;
-      } catch {
-        /* ignore parse errors */
-      }
-      errorMessage = msg;
-    }
+    if (!res.ok) return { assets: [] };
     const data = (await res.json()) as {
       results?: Array<{
         id: number;
@@ -62,8 +103,8 @@ async function webSearchToolbox(
       }>;
       error?: string;
     };
-    if (data.error && !errorMessage) errorMessage = data.error;
-    const assets: ToolboxAsset[] = (data.results ?? []).map((r) => ({
+    if (!data.results || data.results.length === 0) return { assets: [] };
+    const assets: ToolboxAsset[] = data.results.map((r) => ({
       id: r.id,
       name: r.name,
       description: "",
@@ -74,20 +115,151 @@ async function webSearchToolbox(
       created: "",
       updated: "",
     }));
-    if (errorMessage && assets.length === 0) {
-      return { assets: [], error: errorMessage };
-    }
     return { assets };
-  } catch (e) {
-    return { assets: [], error: `Network error: ${e}` };
+  } catch {
+    return { assets: [] };
   }
 }
 
+async function webSearchDirectBrowser(
+  query: string,
+  category: AssetCategory,
+  limit: number
+): Promise<ToolboxSearchResult> {
+  const assetType = CATEGORY_TO_ASSET_TYPE[category] ?? 10;
+  const params = new URLSearchParams({
+    Category: "1",
+    Keyword: query,
+    AssetType: String(assetType),
+    SortType: "0",
+    SortAggregation: "3",
+    SortOrder: "2",
+    IncludeNotForSale: "false",
+    Limit: String(Math.min(limit, 30)),
+  });
+
+  try {
+    const res = await fetch(`https://catalog.roblox.com/v1/search/items?${params}`, {
+      credentials: "omit",
+    });
+    if (!res.ok) return { assets: [] };
+
+    const json = (await res.json()) as {
+      data?: Array<{ id: number; itemType: string }>;
+    };
+    const items = json.data ?? [];
+    if (items.length === 0) return { assets: [] };
+
+    const ids = items.map((it) => it.id);
+    // Fetch thumbnails directly (this endpoint supports CORS)
+    const thumbs = await fetchBrowserThumbnails(ids);
+    // Fetch details via our server (since economy.roblox.com may not support browser CORS)
+    const details = await webGetAssetDetailsBatch(ids);
+
+    const assets: ToolboxAsset[] = ids
+      .map((id) => {
+        const d = details[id];
+        if (!d) return null;
+        return {
+          id,
+          name: d.name,
+          description: "",
+          creatorName: d.creatorName,
+          creatorId: d.creatorId,
+          thumbnailUrl: thumbs[id],
+          favoriteCount: 0,
+          created: "",
+          updated: "",
+        };
+      })
+      .filter(Boolean) as ToolboxAsset[];
+
+    return { assets };
+  } catch {
+    return { assets: [] };
+  }
+}
+
+async function fetchBrowserThumbnails(ids: number[]): Promise<Record<number, string>> {
+  if (ids.length === 0) return {};
+  try {
+    const params = new URLSearchParams({
+      assetIds: ids.join(","),
+      size: "150x150",
+      format: "Png",
+      isCircular: "false",
+    });
+    const res = await fetch(`https://thumbnails.roblox.com/v1/assets?${params}`, {
+      credentials: "omit",
+    });
+    if (!res.ok) return {};
+    const data = (await res.json()) as {
+      data?: Array<{ targetId: number; imageUrl?: string; state: string }>;
+    };
+    const out: Record<number, string> = {};
+    for (const item of data.data ?? []) {
+      if (item.state === "Completed" && item.imageUrl) out[item.targetId] = item.imageUrl;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+async function webGetAssetDetailsBatch(
+  ids: number[]
+): Promise<Record<number, { name: string; creatorName: string; creatorId: number }>> {
+  // Use our server-side asset details endpoint (batch)
+  if (ids.length === 0) return {};
+  const results: Record<number, { name: string; creatorName: string; creatorId: number }> = {};
+  for (const id of ids) {
+    const asset = await webGetAssetDetails(id);
+    if (asset) {
+      results[id] = { name: asset.name, creatorName: asset.creatorName, creatorId: asset.creatorId };
+    }
+  }
+  return results;
+}
+
 async function webGetAssetDetails(assetId: number): Promise<ToolboxAsset | null> {
-  const res = await fetch(`/api/toolbox/assets/${assetId}`);
-  if (!res.ok) return null;
-  const data = (await res.json()) as { asset?: ToolboxAsset; error?: string };
-  return data.asset ?? null;
+  // Tier 1: server endpoint
+  try {
+    const res = await fetch(`/api/toolbox/assets/${assetId}`);
+    if (res.ok) {
+      const data = (await res.json()) as { asset?: ToolboxAsset };
+      if (data.asset) return data.asset;
+    }
+  } catch {
+    // fall through
+  }
+  // Tier 2: try economy API directly from browser
+  try {
+    const res = await fetch(`https://economy.roblox.com/v2/assets/${assetId}/details`, {
+      credentials: "omit",
+    });
+    if (res.ok) {
+      const eco = (await res.json()) as {
+        Name?: string;
+        Creator?: { Name?: string; Id?: number };
+        FavoriteCount?: number;
+      };
+      if (eco.Name) {
+        return {
+          id: assetId,
+          name: eco.Name,
+          description: "",
+          creatorName: eco.Creator?.Name ?? "Unknown",
+          creatorId: eco.Creator?.Id ?? 0,
+          favoriteCount: eco.FavoriteCount ?? 0,
+          created: "",
+          updated: "",
+        };
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
