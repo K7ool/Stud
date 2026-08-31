@@ -3,10 +3,14 @@ import { persist } from "zustand/middleware";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   OAuthAuth,
+  DeviceCodeData,
   getStoredAuth,
   clearAuth,
   startOAuthLogin,
   handleOAuthCallback,
+  startDeviceCode,
+  pollDeviceCode,
+  completeDeviceCodeLogin,
   isAuthenticated,
 } from "@/lib/auth/codex";
 import { useModelsStore } from "./models";
@@ -31,6 +35,13 @@ interface AuthState {
   checkOAuthCallback: () => Promise<boolean>;
   cancelLogin: () => void;
 
+  // Device-code flow (works on web and desktop)
+  deviceCode: DeviceCodeData | null;
+  deviceCodePending: boolean;
+  startDeviceLogin: () => Promise<void>;
+  pollDeviceLogin: () => Promise<boolean>;
+  cancelDeviceLogin: () => void;
+
   // Getters
   isOAuthAuthenticated: () => boolean;
 }
@@ -43,6 +54,8 @@ export const useAuthStore = create<AuthState>()(
       isLoggingIn: false,
       loginError: null,
       loginUrl: null,
+      deviceCode: null,
+      deviceCodePending: false,
 
       setAuthMethod: (method) => {
         set({ authMethod: method });
@@ -50,16 +63,11 @@ export const useAuthStore = create<AuthState>()(
 
       startLogin: async () => {
         set({ isLoggingIn: true, loginError: null, loginUrl: null });
-        // ChatGPT Plus/Pro OAuth only works in the Tauri desktop app: OpenAI's
-        // Codex client forces a callback to http://localhost:1455, which a web
-        // browser cannot serve. Do not launch the (broken) flow on the web;
-        // point the user to the working options instead.
+        // On the web, OpenAI's Codex client forces a localhost:1455 callback that a
+        // browser cannot serve, so the PKCE redirect cannot work. Use the official
+        // device-code flow instead (no callback needed).
         if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
-          set({
-            isLoggingIn: false,
-            loginError:
-              "ChatGPT Plus/Pro sign-in is only available in the Stud desktop app. On the web, use OpenCode Zen (free models) or an API key instead.",
-          });
+          await get().startDeviceLogin();
           return;
         }
         try {
@@ -74,6 +82,70 @@ export const useAuthStore = create<AuthState>()(
             loginError: error instanceof Error ? error.message : String(error),
           });
         }
+      },
+
+      startDeviceLogin: async () => {
+        set({ isLoggingIn: true, loginError: null, loginUrl: null, deviceCodePending: true });
+        try {
+          const deviceCode = await startDeviceCode();
+          sessionStorage.setItem("codex_device_auth_id", deviceCode.device_auth_id);
+          sessionStorage.setItem("codex_device_user_code", deviceCode.user_code);
+          set({ deviceCode, deviceCodePending: false });
+        } catch (error) {
+          set({
+            deviceCodePending: false,
+            isLoggingIn: false,
+            loginError: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+
+      pollDeviceLogin: async () => {
+        const { deviceCode } = get();
+        if (!deviceCode) return false;
+        try {
+          const data = await pollDeviceCode(deviceCode.device_auth_id, deviceCode.user_code);
+          if (!data) return false;
+          const auth = await completeDeviceCodeLogin(
+            deviceCode.device_auth_id,
+            deviceCode.user_code,
+            data
+          );
+          set({
+            oauthAuth: auth,
+            deviceCode: null,
+            deviceCodePending: false,
+            isLoggingIn: false,
+            authMethod: "oauth",
+            loginError: null,
+          });
+          sessionStorage.removeItem("codex_device_auth_id");
+          sessionStorage.removeItem("codex_device_user_code");
+          useModelsStore.getState().fetchModels();
+          return true;
+        } catch (error) {
+          set({
+            loginError: error instanceof Error ? error.message : String(error),
+            isLoggingIn: false,
+            deviceCodePending: false,
+            deviceCode: null,
+          });
+          sessionStorage.removeItem("codex_device_auth_id");
+          sessionStorage.removeItem("codex_device_user_code");
+          return false;
+        }
+      },
+
+      cancelDeviceLogin: () => {
+        sessionStorage.removeItem("codex_device_auth_id");
+        sessionStorage.removeItem("codex_device_user_code");
+        set({
+          deviceCode: null,
+          deviceCodePending: false,
+          isLoggingIn: false,
+          loginError: null,
+          loginUrl: null,
+        });
       },
 
       cancelLogin: () => {
@@ -108,6 +180,8 @@ export const useAuthStore = create<AuthState>()(
           oauthAuth: null,
           authMethod: "api_key",
           loginError: null,
+          deviceCode: null,
+          deviceCodePending: false,
         });
       },
 
@@ -166,7 +240,16 @@ export function useOAuthCallbackPoller() {
   // Check periodically while logging in
   if (typeof window !== "undefined" && isLoggingIn) {
     const interval = setInterval(async () => {
-      const completed = await checkOAuthCallback();
+      let completed = false;
+      // On the web use the device-code poller; on desktop poll the local callback
+      // server. In desktop mode there is no deviceCode, so fall back to the server.
+      const isWeb = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
+      if (isWeb) {
+        const { pollDeviceLogin } = useAuthStore.getState();
+        completed = await pollDeviceLogin();
+      } else {
+        completed = await checkOAuthCallback();
+      }
       if (completed) {
         clearInterval(interval);
       }

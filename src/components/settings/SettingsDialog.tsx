@@ -186,42 +186,51 @@ function ChatGPTAuth() {
     startLogin,
     logout,
     cancelLogin,
-    checkOAuthCallback,
+    cancelDeviceLogin,
+    deviceCode,
     isOAuthAuthenticated,
   } = useAuthStore();
   const { codexModels, isLoading: isLoadingModels, refreshModels, lastFetched } = useModelsStore();
 
   const [copied, setCopied] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [polling, setPolling] = useState(false);
   const isAuthenticated = isOAuthAuthenticated();
-  // ChatGPT OAuth only works in the Tauri desktop app (OpenAI forces a
-  // localhost:1455 callback). On the web we surface a desktop-only notice.
+  // ChatGPT OAuth's normal redirect is locked to localhost:1455, so the web uses
+  // the official device-code flow instead (no callback needed).
   const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
-
-  // Poll for OAuth callback when logging in
-  useEffect(() => {
-    if (!isLoggingIn) return;
-    
-    const interval = setInterval(async () => {
-      const completed = await checkOAuthCallback();
-      if (completed) {
-        clearInterval(interval);
-      }
-    }, 1000);
-    
-    // Cleanup after 5 minutes
-    const timeout = setTimeout(() => clearInterval(interval), 5 * 60 * 1000);
-    
-    return () => {
-      clearInterval(interval);
-      clearTimeout(timeout);
-    };
-  }, [isLoggingIn, checkOAuthCallback]);
 
   const handleCopyUrl = async () => {
     if (loginUrl) {
       await navigator.clipboard.writeText(loginUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleCopyCode = async () => {
+    if (!deviceCode) return;
+    await navigator.clipboard.writeText(deviceCode.user_code);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
+  };
+
+  const handlePoll = async () => {
+    if (polling) return;
+    setPolling(true);
+    const { pollDeviceLogin } = useAuthStore.getState();
+    await pollDeviceLogin();
+    setPolling(false);
+  };
+
+  const handleStart = () => {
+    if (isWebMode) {
+      // Device-code flow has no callback; just start it.
+      cancelLogin();
+      const { startDeviceLogin } = useAuthStore.getState();
+      startDeviceLogin();
+    } else {
+      startLogin();
     }
   };
 
@@ -244,6 +253,7 @@ function ChatGPTAuth() {
       
       <p className="text-xs text-muted-foreground">
         Sign in with your ChatGPT Plus or Pro subscription. No API key needed!
+        {isWebMode && " On the web we use the secure device-code flow."}
       </p>
 
       {loginError && (
@@ -292,6 +302,68 @@ function ChatGPTAuth() {
           </div>
         </div>
       ) : isLoggingIn ? (
+        isWebMode && deviceCode ? (
+          /* Device-code UI */
+          <div className="space-y-3">
+            <div className="rounded-xl bg-primary/5 border border-primary/20 p-3 space-y-3">
+              <p className="text-xs text-muted-foreground">
+                1. Open{" "}
+                <a
+                  href={deviceCode.verification_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary font-medium hover:underline break-all"
+                >
+                  {deviceCode.verification_url}
+                </a>{" "}
+                in any browser (or copy it).
+              </p>
+              <p className="text-xs text-muted-foreground">
+                2. Sign in to ChatGPT and enter the code below. Your device must
+                have <span className="font-medium">"Allow device code login"</span>{" "}
+                enabled in ChatGPT settings.
+              </p>
+              <div className="flex items-center justify-center gap-2">
+                <span className="text-2xl font-mono font-bold tracking-[0.3em] select-all">
+                  {deviceCode.user_code}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCopyCode}
+                  className="shrink-0 h-8 w-8 p-0 rounded-lg"
+                >
+                  {copiedCode ? (
+                    <Check className="w-4 h-4 text-green-600" />
+                  ) : (
+                    <Copy className="w-4 h-4" />
+                  )}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground text-center">
+                Already entered the code? Click continue below.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                onClick={handlePoll}
+                disabled={polling}
+                className="flex-1 rounded-xl bg-gradient-to-r from-[#10a37f] to-[#1a7f64] hover:from-[#0d8f6e] hover:to-[#166b55]"
+              >
+                <Loader variant="circular" size="sm" className="mr-2" />
+                {polling ? "Checking…" : "I've signed in — continue"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={cancelDeviceLogin}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </div>
+        ) : (
         <div className="space-y-3">
           {/* Signing in state with URL fallback */}
           <div className="flex items-center justify-between p-3 bg-primary/5 rounded-xl">
@@ -341,17 +413,10 @@ function ChatGPTAuth() {
             Complete sign-in in your browser. This window will update automatically.
           </p>
         </div>
-      ) : isWebMode ? (
-        <div className="rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground">
-          ChatGPT Plus/Pro sign-in is only available in the{" "}
-          <span className="font-medium text-foreground">Stud desktop app</span>.
-          On the web, use{" "}
-          <span className="font-medium text-foreground">OpenCode Zen</span> (free
-          models like Big Pickle) or an API key from the tabs above.
-        </div>
+        )
       ) : (
         <Button 
-          onClick={startLogin}
+          onClick={handleStart}
           disabled={isLoggingIn}
           className="w-full rounded-xl bg-gradient-to-r from-[#10a37f] to-[#1a7f64] hover:from-[#0d8f6e] hover:to-[#166b55]"
         >

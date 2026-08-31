@@ -283,6 +283,132 @@ export async function handleOAuthCallback(
   return auth;
 }
 
+// ---- Device-code (device auth) flow for web ----
+//
+// OpenAI's Codex OAuth client locks its redirect URI to http://localhost:1455,
+// which a web browser cannot serve. The official headless alternative is the
+// "device auth" flow the Codex CLI uses (`codex login --device-auth`). It needs
+// no callback at all: the user opens a verification URL, enters a one-time code
+// in any browser, and the app polls OpenAI until the user authorizes.
+//
+// All device-auth HTTP calls go through the serverless proxy (/api/codex/device)
+// because auth.openai.com does not send CORS headers to the browser.
+
+export interface DeviceCodeData {
+  device_auth_id: string;
+  user_code: string;
+  interval: number;
+  verification_url: string;
+  expires_in?: number;
+}
+
+interface DevicePollSuccess {
+  authorization_code: string;
+  code_challenge: string;
+  code_verifier: string;
+}
+
+// Request a one-time device user code.
+export async function startDeviceCode(): Promise<DeviceCodeData> {
+  const res = await fetch(`${CODEX_PROXY_ENDPOINT}?step=code`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: CLIENT_ID }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Could not start device sign-in (${res.status}): ${text}`);
+  }
+  const data = await res.json();
+  return {
+    device_auth_id: data.device_auth_id,
+    user_code: data.user_code,
+    interval: Number(data.interval) || 5,
+    verification_url: data.verification_url || `${ISSUER}/codex/device`,
+    expires_in: data.expires_in,
+  };
+}
+
+// Poll OpenAI until the user has authorized, then return the PKCE + auth code.
+// Resolves `true` when authorization is complete, `false` while still pending.
+export async function pollDeviceCode(
+  deviceAuthId: string,
+  userCode: string
+): Promise<DevicePollSuccess | null> {
+  const res = await fetch(`${CODEX_PROXY_ENDPOINT}?step=poll`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ device_auth_id: deviceAuthId, user_code: userCode }),
+  });
+
+  // OpenAI returns 4xx (forbidden/not-found) while the user is still pending.
+  if (res.status === 403 || res.status === 404 || res.status === 409) {
+    return null;
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Device sign-in check failed (${res.status}): ${text}`);
+  }
+
+  const data = await res.json();
+  if (!data.authorization_code || !data.code_verifier) {
+    return null;
+  }
+  return {
+    authorization_code: data.authorization_code,
+    code_challenge: data.code_challenge,
+    code_verifier: data.code_verifier,
+  };
+}
+
+async function exchangeDeviceCode(
+  code: string,
+  codeVerifier: string
+): Promise<TokenResponse> {
+  const res = await fetch(`${CODEX_PROXY_ENDPOINT}?step=token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code, code_verifier: codeVerifier }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Token exchange failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+// Complete a device-code login: exchange the authorization code and persist.
+export async function completeDeviceCodeLogin(
+  deviceAuthId: string,
+  userCode: string,
+  poll: DevicePollSuccess
+): Promise<OAuthAuth> {
+  const tokens = await exchangeDeviceCode(poll.authorization_code, poll.code_verifier);
+
+  let accountId: string | undefined;
+  if (tokens.id_token) {
+    try {
+      const claims = decodeJwt(tokens.id_token);
+      accountId = extractAccountIdFromClaims(claims);
+    } catch {
+      accountId = undefined;
+    }
+  }
+
+  const auth: OAuthAuth = {
+    type: "oauth",
+    access: tokens.access_token,
+    refresh: tokens.refresh_token,
+    expires: Date.now() + tokens.expires_in * 1000,
+    accountId,
+  };
+
+  saveAuth(auth);
+  sessionStorage.removeItem("codex_device_auth_id");
+  sessionStorage.removeItem("codex_device_user_code");
+  return auth;
+}
+
 // Codex fetch wrapper - uses Tauri HTTP plugin to bypass CORS
 export async function codexFetch(
   _input: RequestInfo | URL,
