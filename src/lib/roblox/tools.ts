@@ -1840,6 +1840,7 @@ The suggestions are context-aware based on the current project.`,
 interface PlanStepInput {
   id: string;
   title: string;
+  group?: string;
   dependsOn?: string[];
   priority?: "high" | "normal" | "low";
 }
@@ -1856,6 +1857,7 @@ function buildSteps(input: PlanStepInput[], startOrder: number): TaskStep[] {
   return input.map((s, i) => ({
     id: s.id || `step_${Date.now()}_${i}`,
     title: s.title,
+    group: s.group || "General",
     status: "pending" as const,
     order: startOrder + i,
     dependsOn: s.dependsOn ?? [],
@@ -1864,7 +1866,17 @@ function buildSteps(input: PlanStepInput[], startOrder: number): TaskStep[] {
 }
 
 /** Mark a step and auto-advance to the next eligible one. Returns summary. */
-async function advanceSteps(state: { stepId?: string; result?: string; mark: "completed" | "skipped" | "failed" | "cancelled" }, error?: string) {
+async function advanceSteps(
+  state: {
+    stepId?: string;
+    result?: string;
+    toolsUsed?: string[];
+    relatedFiles?: string[];
+    relatedInstances?: string[];
+    mark: "completed" | "skipped" | "failed" | "cancelled";
+  },
+  error?: string
+) {
   const task = activePlanTask();
   if (!task) return { ok: false, error: "No active task to update" };
 
@@ -1884,14 +1896,20 @@ async function advanceSteps(state: { stepId?: string; result?: string; mark: "co
       next.status = "completed";
       next.stepProgress = 1;
       if (state.result) next.result = state.result;
+      if (state.toolsUsed) next.toolsUsed = state.toolsUsed;
+      if (state.relatedFiles) next.relatedFiles = state.relatedFiles;
+      if (state.relatedInstances) next.relatedInstances = state.relatedInstances;
       delete next.error;
       delete next.blockedReason;
+      delete next.failure;
     } else if (state.mark === "skipped") {
       next.status = "skipped";
       if (state.result) next.result = state.result;
     } else if (state.mark === "failed") {
       next.status = "failed";
       if (error) next.error = error;
+      next.failure = error || "Step failed";
+      next.retryable = true;
     } else {
       next.status = "cancelled";
     }
@@ -1914,144 +1932,217 @@ async function advanceSteps(state: { stepId?: string; result?: string; mark: "co
   }
 
   await ts.setSteps(task.id, steps);
-  return { ok: true, stepId: targetId, status: steps.find((s) => s.id === targetId)?.status };
+  const updatedStep = steps.find((s) => s.id === targetId);
+  const activeStep = steps.find((s) => s.status === "in_progress");
+
+  return {
+    ok: true,
+    stepId: targetId,
+    status: updatedStep?.status,
+    nextActiveStep: activeStep ? { id: activeStep.id, title: activeStep.title } : null,
+  };
 }
 
-export const updateTaskPlan = tool({
-  description: `Control the structured TODO plan for the current task. This is REAL state —
-the UI reflects exactly what you set here. Use it for any non-trivial task.
+const todoInputSchema = z.object({
+  action: z
+    .enum([
+      "create",
+      "replace",
+      "replan",
+      "add",
+      "remove",
+      "start",
+      "in_progress",
+      "advance",
+      "complete",
+      "skip",
+      "fail",
+      "block",
+      "unblock",
+      "cancel",
+      "progress",
+    ])
+    .describe("Action to execute on the task plan"),
+  currentStep: z
+    .string()
+    .optional()
+    .describe("Step id to target for status changes. Omit to use the current in-progress step."),
+  stepIds: z.array(z.string()).optional().describe("Step ids for remove action."),
+  steps: z
+    .array(
+      z.object({
+        id: z.string(),
+        title: z.string(),
+        group: z.string().optional().describe("Category/phase (e.g. Architecture, Core, UI, Verification)"),
+        dependsOn: z.array(z.string()).optional().default([]),
+        priority: z.enum(["high", "normal", "low"]).optional(),
+      })
+    )
+    .optional()
+    .describe("Step definitions for create/replace/replan/add."),
+  result: z.string().optional().describe("Short result/summary for the completed or skipped step."),
+  failure: z.string().optional().describe("Reason for failure when action is 'fail'."),
+  blockedReason: z.string().optional().describe("Reason for block when action is 'block'."),
+  toolsUsed: z.array(z.string()).optional().describe("List of tools used during this step execution."),
+  relatedFiles: z.array(z.string()).optional().describe("List of files created/modified during this step."),
+  relatedInstances: z.array(z.string()).optional().describe("List of Roblox instances created/modified."),
+  progress: z.number().min(0).max(1).optional().describe("Live progress 0..1 for progress action."),
+  note: z.string().optional().describe("Optional note (for logging/audit)."),
+});
+
+type TodoInput = z.infer<typeof todoInputSchema>;
+
+async function executeTodoTool(input: TodoInput) {
+  const task = activePlanTask();
+  if (!task) return { ok: false, error: "No active task to update plan for" };
+  const ts = useTaskStore.getState();
+  const targetId = input.currentStep || task.steps.find((s) => s.status === "in_progress")?.id || "";
+
+  switch (input.action) {
+    case "create":
+    case "replace":
+    case "replan": {
+      if (!input.steps || input.steps.length === 0) {
+        return { ok: false, error: `${input.action} requires steps[]` };
+      }
+      const now = Date.now();
+      const existing = new Map(task.steps.map((s) => [s.id, s]));
+      let steps = buildSteps(input.steps, 0);
+      if (input.action === "replan") {
+        // Preserve status/attempts of steps we already know.
+        steps = steps.map((s, i) => {
+          const prev = existing.get(s.id);
+          return prev
+            ? {
+                ...prev,
+                order: i,
+                title: s.title,
+                group: s.group || prev.group,
+                dependsOn: s.dependsOn,
+                priority: s.priority,
+              }
+            : s;
+        });
+      }
+      steps = reEvaluateBlocking(steps);
+      const stillRunning = steps.find((s) => s.status === "in_progress");
+      if (!stillRunning) {
+        const first = nextPendingStep(steps);
+        if (first) {
+          steps = steps.map((s) =>
+            s.id === first.id
+              ? {
+                  ...s,
+                  status: "in_progress" as const,
+                  startedAt: s.startedAt ?? now,
+                  attempts: (s.attempts ?? 0) + 1,
+                }
+              : s
+          );
+        }
+      }
+      await ts.setSteps(task.id, steps);
+      const activeStep = steps.find((s) => s.status === "in_progress");
+      return {
+        ok: true,
+        action: input.action,
+        totalSteps: steps.length,
+        activeStep: activeStep ? { id: activeStep.id, title: activeStep.title } : null,
+      };
+    }
+
+    case "add": {
+      if (!input.steps || input.steps.length === 0) {
+        return { ok: false, error: "add requires steps[]" };
+      }
+      const additions = buildSteps(input.steps, task.steps.length);
+      await ts.setSteps(task.id, reEvaluateBlocking([...task.steps, ...additions]));
+      return { ok: true, action: "add", added: additions.length, total: task.steps.length + additions.length };
+    }
+
+    case "remove": {
+      const ids = new Set(input.stepIds ?? []);
+      if (ids.size === 0) return { ok: false, error: "remove requires stepIds[]" };
+      const steps = reEvaluateBlocking(task.steps.filter((s) => !ids.has(s.id)));
+      await ts.setSteps(task.id, steps);
+      return { ok: true, action: "remove", remaining: steps.length };
+    }
+
+    case "start":
+    case "in_progress": {
+      if (!targetId) return { ok: false, error: "start/in_progress requires a valid stepId or currentStep" };
+      const targetStep = task.steps.find((s) => s.id === targetId);
+      if (!targetStep) return { ok: false, error: `Step "${targetId}" not found` };
+      await ts.setStepStatus(task.id, targetId, "in_progress");
+      return { ok: true, action: "start", stepId: targetId, status: "in_progress" };
+    }
+
+    case "advance":
+    case "complete":
+      return advanceSteps({
+        stepId: targetId,
+        result: input.result,
+        toolsUsed: input.toolsUsed,
+        relatedFiles: input.relatedFiles,
+        relatedInstances: input.relatedInstances,
+        mark: "completed",
+      });
+
+    case "skip":
+      return advanceSteps({ stepId: targetId, result: input.result, mark: "skipped" });
+
+    case "fail":
+      return advanceSteps({ stepId: targetId, mark: "failed" }, input.failure || "Step failed");
+
+    case "cancel":
+      return advanceSteps({ stepId: targetId, mark: "cancelled" });
+
+    case "block":
+      await ts.setStepStatus(task.id, targetId, "blocked", { blockedReason: input.blockedReason || "Blocked" });
+      return { ok: true, action: "block", stepId: targetId, blocked: true };
+
+    case "unblock":
+      await ts.setStepStatus(task.id, targetId, "pending");
+      return { ok: true, action: "unblock", stepId: targetId, unblocked: true };
+
+    case "progress": {
+      await ts.setStepProgress(task.id, targetId, input.progress ?? 0);
+      return { ok: true, action: "progress", stepId: targetId, progress: input.progress ?? 0 };
+    }
+
+    default:
+      return { ok: false, error: `Unknown action: ${(input as { action: string }).action}` };
+  }
+}
+
+export const todowrite = tool({
+  description: `First-class TODO plan and live execution tracking tool inspired by OpenCode.
+Use this tool whenever executing multi-step tasks, large scripts, or complex systems.
 
 ACTIONS:
-- "replace": (re)create the entire plan. Pass steps[] with id, title, optional dependsOn[] and priority. Auto-starts the first ready step.
-- "replan": same as replace but preserves the status/progress of any step whose id already exists (use for reordering/rewriting while keeping completed work).
+- "create" / "replace": (re)create the entire plan. Pass steps[] with id, title, group, optional dependsOn[] and priority. Auto-starts the first ready step.
+- "replan": update/reorder steps while strictly preserving already completed steps and their results.
 - "add": append new step(s) to the existing plan (steps[]).
 - "remove": delete step(s) from the plan (stepIds[]).
-- "advance": mark a step completed (defaults to the current in-progress one) and auto-start the next eligible step. Pass optional result.
-- "skip": mark a step skipped (defaults to current) and auto-start the next.
-- "fail": mark current step failed with failure.
-- "block": mark current step blocked with blockedReason (e.g. waiting on data the user must provide).
-- "unblock": clear a blocked step (mark it pending again).
-- "cancel": mark current step cancelled (abandon it) without starting the next.
-- "progress": set live progress (0..1) on the current step.
+- "advance" / "complete": mark a step completed (with result, toolsUsed, relatedFiles, relatedInstances) and auto-start the next eligible step.
+- "skip": mark a step skipped (with result/reason) and auto-start the next eligible step.
+- "fail": mark step failed with failure message (supports single-step retry).
+- "block": mark step blocked with blockedReason (e.g. waiting for Studio connection or user input).
+- "unblock": clear blocked state and return step to pending.
+- "progress": set live progress 0..1 for long-running operations on current step.
 
 Steps are ordered and use dependsOn to express prerequisites. A pending step whose
-prerequisites aren't met is auto-blocked. Do NOT use for trivial/single-step tasks.`,
-  inputSchema: z.object({
-    action: z.enum(["replace", "replan", "add", "remove", "advance", "skip", "fail", "block", "unblock", "cancel", "progress"]),
-    currentStep: z.string().optional().describe("Step id to target for advance/skip/fail/block/unblock/cancel/progress. Omit to use the current in-progress step."),
-    stepIds: z.array(z.string()).optional().describe("Step ids for remove."),
-    steps: z
-      .array(
-        z.object({
-          id: z.string(),
-          title: z.string(),
-          dependsOn: z.array(z.string()).optional().default([]),
-          priority: z.enum(["high", "normal", "low"]).optional(),
-        })
-      )
-      .optional()
-      .describe("Step definitions for replace/replan/add."),
-    result: z.string().optional().describe("Short result/note for the completed or skipped step."),
-    failure: z.string().optional().describe("Reason for fail."),
-    blockedReason: z.string().optional().describe("Reason for block."),
-    progress: z.number().min(0).max(1).optional().describe("Live progress 0..1 for progress action."),
-    note: z.string().optional().describe("Human note shown in the panel (ignored for state)."),
-  }),
-  execute: async (input: {
-    action: "replace" | "replan" | "add" | "remove" | "advance" | "skip" | "fail" | "block" | "unblock" | "cancel" | "progress";
-    currentStep?: string;
-    stepIds?: string[];
-    steps?: PlanStepInput[];
-    result?: string;
-    failure?: string;
-    blockedReason?: string;
-    progress?: number;
-    note?: string;
-  }) => {
-    const task = activePlanTask();
-    if (!task) return { ok: false, error: "No active task to update plan for" };
-    const ts = useTaskStore.getState();
-    const targetId = input.currentStep || task.steps.find((s) => s.status === "in_progress")?.id || "";
+prerequisites are not yet completed is auto-blocked.`,
+  inputSchema: todoInputSchema,
+  execute: executeTodoTool,
+});
 
-    switch (input.action) {
-      case "replace":
-      case "replan": {
-        if (!input.steps || input.steps.length === 0) {
-          return { ok: false, error: "replace/replan requires steps[]" };
-        }
-        const now = Date.now();
-        const existing = new Map(task.steps.map((s) => [s.id, s]));
-        let steps = buildSteps(input.steps, 0);
-        if (input.action === "replan") {
-          // Preserve status/attempts of steps we already know.
-          steps = steps.map((s, i) => {
-            const prev = existing.get(s.id);
-            return prev
-              ? { ...prev, order: i, title: s.title, dependsOn: s.dependsOn, priority: s.priority }
-              : s;
-          });
-        }
-        steps = reEvaluateBlocking(steps);
-        const stillRunning = steps.find((s) => s.status === "in_progress");
-        if (!stillRunning) {
-          const first = nextPendingStep(steps);
-          if (first) {
-            steps = steps.map((s) =>
-              s.id === first.id
-                ? { ...s, status: "in_progress" as const, startedAt: s.startedAt ?? now, attempts: (s.attempts ?? 0) + 1 }
-                : s
-            );
-          }
-        }
-        await ts.setSteps(task.id, steps);
-        return {
-          ok: true,
-          action: input.action,
-          steps: steps.length,
-          started: steps.find((s) => s.status === "in_progress")?.id || "",
-        };
-      }
-
-      case "add": {
-        if (!input.steps || input.steps.length === 0) {
-          return { ok: false, error: "add requires steps[]" };
-        }
-        const additions = buildSteps(input.steps, task.steps.length);
-        await ts.setSteps(task.id, reEvaluateBlocking([...task.steps, ...additions]));
-        return { ok: true, action: "add", added: additions.length, total: task.steps.length + additions.length };
-      }
-
-      case "remove": {
-        const ids = new Set(input.stepIds ?? []);
-        if (ids.size === 0) return { ok: false, error: "remove requires stepIds[]" };
-        const steps = reEvaluateBlocking(task.steps.filter((s) => !ids.has(s.id)));
-        await ts.setSteps(task.id, steps);
-        return { ok: true, action: "remove", remaining: steps.length };
-      }
-
-      case "advance":
-        return advanceSteps({ stepId: targetId, result: input.result, mark: "completed" });
-      case "skip":
-        return advanceSteps({ stepId: targetId, result: input.result, mark: "skipped" });
-      case "fail":
-        return advanceSteps({ stepId: targetId, mark: "failed" }, input.failure || "Step failed");
-      case "cancel":
-        return advanceSteps({ stepId: targetId, mark: "cancelled" });
-      case "block":
-        await ts.setStepStatus(task.id, targetId, "blocked", { blockedReason: input.blockedReason || "Blocked" });
-        return { ok: true, action: "block", stepId: targetId, blocked: true };
-      case "unblock":
-        await ts.setStepStatus(task.id, targetId, "pending");
-        return { ok: true, action: "unblock", stepId: targetId, unblocked: true };
-      case "progress": {
-        await ts.setStepProgress(task.id, targetId, input.progress ?? 0);
-        return { ok: true, action: "progress", stepId: targetId, progress: input.progress ?? 0 };
-      }
-      default:
-        return { ok: false, error: `Unknown action: ${input.action}` };
-    }
-  },
-})
+export const updateTaskPlan = tool({
+  description: `Control the structured TODO plan for the current task. (Alias/Compatible with todowrite).
+This is REAL state — the UI reflects exactly what you set here.`,
+  inputSchema: todoInputSchema,
+  execute: executeTodoTool,
+});
 
 // ============================================================================
 // Export all tools
@@ -2093,6 +2184,7 @@ export const robloxTools = {
 
   // Agentic tools
   roblox_ask_user: robloxAskUser,
+  todowrite: todowrite,
   update_task_plan: updateTaskPlan,
 
   // File system tools

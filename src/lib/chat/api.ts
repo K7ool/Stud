@@ -340,9 +340,31 @@ export type StepStatus =
 
 export type StepPriority = "high" | "normal" | "low";
 
+export interface TaskEvent {
+  id: string;
+  type:
+    | "created"
+    | "step_started"
+    | "step_completed"
+    | "step_failed"
+    | "step_blocked"
+    | "step_unblocked"
+    | "step_skipped"
+    | "replanned"
+    | "paused"
+    | "resumed"
+    | "cancelled"
+    | "completed";
+  stepId?: string;
+  timestamp: number;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
 export interface TaskStep {
   id: string;
   title: string;
+  group?: string; // e.g. "Architecture", "Core", "Networking", "UI", "Verification"
   status: StepStatus;
   order: number;
   dependsOn: string[];
@@ -356,7 +378,19 @@ export interface TaskStep {
   /** Human-readable reason the step is currently blocked, if any. */
   blockedReason?: string;
   error?: string;
+  reason?: string;
+  failure?: string;
+  retryable?: boolean;
   result?: string;
+  toolsUsed?: string[];
+  relatedFiles?: string[];
+  relatedInstances?: string[];
+}
+
+export interface TaskProgress {
+  completed: number;
+  total: number;
+  percent: number;
 }
 
 export interface Task {
@@ -371,9 +405,12 @@ export interface Task {
   mode: TaskMode;
   effort: TaskEffort;
   queuePosition: number;
-  progress: number;
-  currentStep: string;
+  progress: number; // 0..1
+  progressDetails?: TaskProgress;
+  currentStep: string; // current active step id
+  currentStepTitle?: string; // current active step title
   steps: TaskStep[];
+  events?: TaskEvent[];
   createdAt: number;
   updatedAt: number;
   startedAt?: number;

@@ -427,6 +427,41 @@ local function findExistingInstance(parent, name, className)
 	return nil
 end
 
+local function plainReplace(str, findStr, replaceStr)
+	if not findStr or findStr == "" then return str, 0 end
+	if not replaceStr then replaceStr = "" end
+	local startPos = 1
+	local count = 0
+	local result = {}
+
+	while true do
+		local s, e = string.find(str, findStr, startPos, true)
+		if not s then
+			table.insert(result, string.sub(str, startPos))
+			break
+		end
+		table.insert(result, string.sub(str, startPos, s - 1))
+		table.insert(result, replaceStr)
+		startPos = e + 1
+		count = count + 1
+	end
+
+	return table.concat(result), count
+end
+
+local function getScriptSource(instance)
+	local s = nil
+	pcall(function()
+		if ScriptEditorService and ScriptEditorService.GetEditorSource then
+			s = ScriptEditorService:GetEditorSource(instance)
+		end
+	end)
+	if not s or s == "" then
+		pcall(function() s = instance.Source end)
+	end
+	return s or ""
+end
+
 -- Update a Lua source container's code without ever hanging the plugin.
 --
 -- ScriptEditorService:UpdateSourceAsync yields while the Script Editor
@@ -450,27 +485,35 @@ end
 local handlers = {}
 handlers["/ping"] = function() return { status = "ok", plugin = PLUGIN_NAME } end
 handlers["/script/get"] = function(data)
+	if not data.path then error("Missing path") end
 	local i = getInstanceFromPath(data.path)
-	if not i then error("Instance not found: " .. data.path) end
-	if not i:IsA("LuaSourceContainer") then error("Not a script: " .. data.path) end
-	local s = ScriptEditorService:GetEditorSource(i); if not s then s = i.Source end
+	if not i then error("Instance not found: " .. tostring(data.path)) end
+	if not i:IsA("LuaSourceContainer") then error("Not a script: " .. tostring(data.path)) end
+	local s = getScriptSource(i)
 	return { path = getInstancePath(i), source = s, className = i.ClassName }
 end
 handlers["/script/set"] = function(data)
+	if not data.path then error("Missing path") end
 	local i = getInstanceFromPath(data.path)
-	if not i then error("Instance not found: " .. data.path) end
-	if not i:IsA("LuaSourceContainer") then error("Not a script: " .. data.path) end
-	local ok, err = updateScriptSource(i, data.source)
+	if not i then error("Instance not found: " .. tostring(data.path)) end
+	if not i:IsA("LuaSourceContainer") then error("Not a script: " .. tostring(data.path)) end
+	local ok, err = updateScriptSource(i, data.source or "")
 	if not ok then error("Failed to write script: " .. tostring(err)) end
 	return { path = getInstancePath(i) }
 end
 handlers["/script/edit"] = function(data)
+	if not data.path then error("Missing path") end
 	local i = getInstanceFromPath(data.path)
-	if not i then error("Instance not found: " .. data.path) end
-	if not i:IsA("LuaSourceContainer") then error("Not a script: " .. data.path) end
-	local s = ScriptEditorService:GetEditorSource(i); if not s then s = i.Source end
-	local ns, count = string.gsub(s, data.oldCode, data.newCode)
-	if count == 0 then error("Code not found in script") end
+	if not i then error("Instance not found: " .. tostring(data.path)) end
+	if not i:IsA("LuaSourceContainer") then error("Not a script: " .. tostring(data.path)) end
+	local s = getScriptSource(i)
+	local oldCode = data.oldCode or data.old_code or ""
+	local newCode = data.newCode or data.new_code or ""
+	if oldCode == "" then error("Missing oldCode to replace") end
+	local ns, count = plainReplace(s, oldCode, newCode)
+	if count == 0 then
+		error("Code not found in script: " .. string.sub(oldCode, 1, 60))
+	end
 	local ok, err = updateScriptSource(i, ns)
 	if not ok then error("Failed to edit script: " .. tostring(err)) end
 	return { path = getInstancePath(i), replaced = count }
@@ -793,7 +836,10 @@ local function pollServer()
 					local req = data.request; local reqId = req.id
 					task.spawn(function()
 						local ok2, result = pcall(handleRequest, req)
-						if not ok2 then print("[stud-bridge] handler error:", tostring(result)) end
+						if not ok2 or type(result) ~= "table" then
+							print("[stud-bridge] handler error:", tostring(result))
+							result = { status = 500, body = jsonEncode({ error = tostring(result) }) }
+						end
 						if reqId then
 							local ok3, respondErr = pcall(function()
 								return HttpService:RequestAsync({

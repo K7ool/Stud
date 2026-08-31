@@ -111,19 +111,22 @@ async function studioRequestViaRelay<T>(
         `${RELAY_BASE}/api/stud/result?site=${site}&id=${id}`,
         { method: "GET" },
       );
-      if (res.status === 200) {
-        sawResult = true;
-        const text = await res.text();
-        let json: any;
-        try {
-          json = JSON.parse(text);
-        } catch {
-          return { success: false, error: `Bad response: ${text}` };
-        }
-        if (json.error) return { success: false, error: json.error };
-        return { success: true, data: json as T };
+      if (res.status === 204) {
+        // 204 = not ready yet, keep polling
+        continue;
       }
-      // 204 = not ready yet, keep polling
+      sawResult = true;
+      const text = await res.text();
+      let json: any;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        return { success: false, error: `Bad response (${res.status}): ${text}` };
+      }
+      if (!res.ok || json.error) {
+        return { success: false, error: json.error || `Studio error (${res.status})` };
+      }
+      return { success: true, data: json as T };
     } catch {
       // network blip, keep polling
     }

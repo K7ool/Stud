@@ -26,7 +26,9 @@ import {
   type TaskPriority,
   type TaskStatus,
   type TaskStep,
+  type TaskEvent,
 } from "@/lib/chat/api";
+import { computeProgress, createAuditTrailEvent } from "@/lib/ai/todo";
 
 /** User-facing effort setting; allows "auto" so the agent picks based on the task. */
 export type UserEffort = TaskEffort | "auto";
@@ -42,8 +44,7 @@ export interface TaskState {
   hydrated: boolean;
   settings: TaskQueueSettings;
   /** The task currently being driven by the agent loop, if any. This is how
-   *  the update_task_plan tool (which executes without knowing the UUID)
-   *  resolves which task to mutate. Set by Home.tsx at run start. */
+   *  the update_task_plan / todowrite tool resolves which task to mutate. */
   activeTaskId: string | null;
 
   hydrate: () => Promise<void>;
@@ -65,6 +66,7 @@ export interface TaskState {
   startStep: (taskId: string, stepId: string) => Promise<void>;
   completeStep: (taskId: string, stepId: string, result?: string) => Promise<void>;
   failStep: (taskId: string, stepId: string, error: string) => Promise<void>;
+  retryStep: (taskId: string, stepId: string) => Promise<void>;
   blockStep: (taskId: string, stepId: string, reason?: string) => Promise<void>;
   unblockStep: (taskId: string, stepId: string) => Promise<void>;
   skipStep: (taskId: string, stepId: string, reason?: string) => Promise<void>;
@@ -335,18 +337,30 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
   async _persistSteps(taskId, steps) {
     const task = get().tasks.find((t) => t.id === taskId);
     if (!task) return;
-    const done = steps.filter((s) => s.status === "completed").length;
-    const current = steps.find((s) => s.status === "in_progress");
-    const progress = steps.length ? Math.min(1, done / steps.length) : 0;
+    const { progress, progressDetails, currentStep, currentStepTitle } = computeProgress(steps);
     set((s) => ({
       tasks: s.tasks.map((t) =>
         t.id === taskId
-          ? { ...t, steps, progress, currentStep: current?.id ?? "", updatedAt: Date.now() }
+          ? {
+              ...t,
+              steps,
+              progress,
+              progressDetails,
+              currentStep,
+              currentStepTitle,
+              updatedAt: Date.now(),
+            }
           : t
       ),
     }));
     writeCache(get().tasks);
-    const updated = await apiPatchTask(taskId, { steps, progress, currentStep: current?.id ?? "" });
+    const updated = await apiPatchTask(taskId, {
+      steps,
+      progress,
+      progressDetails,
+      currentStep,
+      currentStepTitle,
+    });
     if (updated) updateLocal(set, get, updated);
   },
 
@@ -369,6 +383,7 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
         if (status !== s.status && !next.attempts) next.attempts = 1;
         delete next.error;
         delete next.blockedReason;
+        delete next.failure;
       }
       if (status === "completed") {
         next.completedAt = now;
@@ -376,10 +391,13 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
         if (opts?.result) next.result = opts.result;
         delete next.error;
         delete next.blockedReason;
+        delete next.failure;
       }
       if (status === "failed") {
         next.completedAt = now;
         if (opts?.error) next.error = opts.error;
+        next.failure = opts?.error || "Step failed";
+        next.retryable = true;
       }
       if (status === "blocked") {
         next.blockedReason = opts?.blockedReason || "Blocked";
@@ -390,7 +408,55 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
       }
       return next;
     });
-    await (get() as TaskState)._persistSteps(taskId, steps);
+
+    const event = createAuditTrailEvent(
+      status === "in_progress"
+        ? "step_started"
+        : status === "completed"
+        ? "step_completed"
+        : status === "failed"
+        ? "step_failed"
+        : status === "blocked"
+        ? "step_blocked"
+        : "step_skipped",
+      `Step "${task.steps.find((s) => s.id === stepId)?.title || stepId}" marked ${status}`,
+      stepId,
+      opts as Record<string, unknown>
+    );
+
+    const events = [...(task.events || []), event].slice(-50);
+    const { progress, progressDetails, currentStep, currentStepTitle } = computeProgress(steps);
+
+    set((s) => ({
+      tasks: s.tasks.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              steps,
+              events,
+              progress,
+              progressDetails,
+              currentStep,
+              currentStepTitle,
+              updatedAt: Date.now(),
+            }
+          : t
+      ),
+    }));
+    writeCache(get().tasks);
+    const updated = await apiPatchTask(taskId, {
+      steps,
+      events,
+      progress,
+      progressDetails,
+      currentStep,
+      currentStepTitle,
+    });
+    if (updated) updateLocal(set, get, updated);
+  },
+
+  retryStep: async (taskId, stepId) => {
+    await (get() as TaskState).setStepStatus(taskId, stepId, "in_progress");
   },
 
   blockStep: async (taskId, stepId, reason) => {

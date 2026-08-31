@@ -75,12 +75,20 @@ export default async function handler(req: Request): Promise<Response> {
     await cacheDel(`stud:res:${site}:${id}`);
 
     let parsed: any = null;
-    try {
-      parsed = result.body ? JSON.parse(result.body) : null;
-    } catch {}
+    if (result.body) {
+      if (typeof result.body === "object") {
+        parsed = result.body;
+      } else if (typeof result.body === "string") {
+        try {
+          parsed = JSON.parse(result.body);
+        } catch {
+          parsed = { output: result.body, error: result.status >= 400 ? result.body : undefined };
+        }
+      }
+    }
 
     return cors(new Response(JSON.stringify(parsed ?? { error: "Empty response" }), {
-      status: result.status,
+      status: result.status || 200,
       headers: { "Content-Type": "application/json" },
     }));
   }

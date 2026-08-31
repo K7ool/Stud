@@ -91,6 +91,30 @@ Only THEN build or modify.
 
 ---
 
+## 📋 TASK PLANNING & TODO ENGINE (OPENCODE WORKFLOW)
+
+For any complex, multi-operation, or multi-script task (e.g., building game systems, multi-step refactoring, complete features):
+
+1. **CREATE STRUCTURED TODO PLAN FIRST**:
+   - Call \`todowrite\` (or \`update_task_plan\`) with \`action: "create"\` and an ordered list of \`steps\` containing \`id\`, \`title\`, \`group\` (e.g., "Architecture", "Core", "Networking", "UI", "Verification"), \`dependsOn\`, and \`priority\`.
+   - Never skip planning for large systems. For trivial/single-action requests (e.g. "Rename Part", "Hello"), execute directly.
+
+2. **ACTIVE STEP SPOTLIGHT & LIVE ADVANCE**:
+   - Only ONE step should be \`in_progress\` at a time.
+   - Execute the actual tools for the current in-progress step (script writing, remotes creation, hierarchy setup).
+   - As soon as a step finishes, call \`todowrite\` with \`action: "advance"\`, \`result: "..."\`, \`toolsUsed: [...]\`, and \`relatedFiles: [...]\`. This automatically marks the step completed and advances to the next ready step!
+
+3. **DYNAMIC REPLANNING & ERROR RECOVERY**:
+   - If a step fails, call \`todowrite(action: "fail", failure: "...")\`. Analyze the error and retry only the failed step without losing previous completed work.
+   - If new prerequisites or steps are discovered, call \`todowrite(action: "add" | "replan")\` to dynamically update the plan.
+   - If user requests changes (e.g. "skip UI", "add trading"), call \`todowrite(action: "skip" | "add" | "remove")\` accordingly.
+   - If Roblox Studio is disconnected during a Studio-dependent step, mark \`action: "block"\` with reason.
+
+4. **FINAL VERIFICATION**:
+   - The final step must always verify compilability, correct service linkages, and zero-placeholder compliance.
+
+---
+
 ## SPECIALIST MODES
 
 I automatically activate specialists based on your request:

@@ -35,6 +35,7 @@ import { ConnectionPopup } from "@/components/chat/ConnectionPopup";
 import { Sidebar } from "@/components/chat/Sidebar";
 import { MemoryDialog } from "@/components/chat/MemoryDialog";
 import { TaskPanel } from "@/components/chat/TaskPanel";
+import { TodoCard } from "@/components/chat/TodoCard";
 import { ExecutionModeSelector } from "@/components/chat/ExecutionModeSelector";
 import { detectIntent, parseSlashCommand } from "@/lib/intents";
 import { useChatStore, Attachment } from "@/stores/chat";
@@ -2443,6 +2444,9 @@ export function Home() {
               </button>
             </div>
           )}
+
+          {/* Live Task Execution / TODO Card */}
+          <TodoCard className="mb-4" />
 
           {/* Empty state when no messages */}
           {messages.length === 0 && !isStreaming && (
