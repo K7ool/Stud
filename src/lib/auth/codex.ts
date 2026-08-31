@@ -15,7 +15,14 @@ const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 const CODEX_PROXY_ENDPOINT = "/api/codex";
 const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
 const OAUTH_PORT = 1455;
-const REDIRECT_URI = `http://localhost:${OAUTH_PORT}/auth/callback`;
+// Web mode redirects back to a hosted route on this SPA (same origin). The
+// Tauri desktop app uses the local OAuth callback server on port 1455.
+const REDIRECT_URI = isWebMode
+  ? `${typeof window !== "undefined" ? window.location.origin : ""}/auth/callback`
+  : `http://localhost:${OAUTH_PORT}/auth/callback`;
+// Web mode proxies the token exchange through the Vercel function to bypass
+// auth.openai.com's missing browser CORS headers (mirrors /api/codex).
+const OAUTH_TOKEN_PROXY = "/api/codex/oauth/token";
 
 // Token storage key
 const AUTH_STORAGE_KEY = "stud_chatgpt_auth";
@@ -119,41 +126,40 @@ async function exchangeCodeForTokens(
   code: string,
   pkce: PkceCodes
 ): Promise<TokenResponse> {
-  const response = await fetch(`${ISSUER}/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: REDIRECT_URI,
-      client_id: CLIENT_ID,
-      code_verifier: pkce.verifier,
-    }).toString(),
+  return oauthTokenRequest({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: REDIRECT_URI,
+    client_id: CLIENT_ID,
+    code_verifier: pkce.verifier,
   });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Token exchange failed: ${error}`);
-  }
-
-  return response.json();
 }
 
 // Refresh access token
 async function refreshAccessToken(refreshToken: string): Promise<TokenResponse> {
-  const response = await fetch(`${ISSUER}/oauth/token`, {
+  return oauthTokenRequest({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    client_id: CLIENT_ID,
+  });
+}
+
+// Perform an OAuth token grant. In web mode this goes through the server-side
+// proxy (auth.openai.com blocks browser CORS); in the Tauri desktop app it
+// talks to auth.openai.com directly via the HTTP plugin.
+async function oauthTokenRequest(
+  params: Record<string, string>
+): Promise<TokenResponse> {
+  const endpoint = isWebMode ? OAUTH_TOKEN_PROXY : `${ISSUER}/oauth/token`;
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: CLIENT_ID,
-    }).toString(),
+    body: new URLSearchParams(params).toString(),
   });
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`Token refresh failed: ${error}`);
+    throw new Error(`Token request failed: ${response.status} - ${error}`);
   }
 
   return response.json();

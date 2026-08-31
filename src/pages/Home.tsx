@@ -535,6 +535,15 @@ export function Home() {
     useTaskStore.getState().hydrate().catch(() => {});
   }, []);
 
+  // Web-mode OAuth: if the user was redirected back to /auth/callback with a
+  // code, complete the ChatGPT login and clean the URL.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.location.pathname.startsWith("/auth/callback")) {
+      useAuthStore.getState().completeLoginFromCallback().catch(() => {});
+    }
+  }, []);
+
   // URL routing: /chat/:id selects a conversation, "/" or unknown opens the
   // most recent. Switching chats pushes to history so the back button works.
   useEffect(() => {

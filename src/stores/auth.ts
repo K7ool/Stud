@@ -27,6 +27,7 @@ interface AuthState {
   setAuthMethod: (method: AuthMethod) => void;
   startLogin: () => Promise<void>;
   completeLogin: (code: string, state: string) => Promise<void>;
+  completeLoginFromCallback: () => Promise<boolean>;
   logout: () => void;
   checkOAuthCallback: () => Promise<boolean>;
   cancelLogin: () => void;
@@ -54,6 +55,12 @@ export const useAuthStore = create<AuthState>()(
           const { url } = await startOAuthLogin();
           // Store the URL for fallback display
           set({ loginUrl: url });
+          if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
+            // Web mode: full-page redirect to OpenAI, which returns to
+            // /auth/callback on this origin after the user authorizes.
+            window.location.assign(url);
+            return;
+          }
           // Try to open in default browser using Tauri's opener
           await openUrl(url);
         } catch (error) {
@@ -86,6 +93,27 @@ export const useAuthStore = create<AuthState>()(
           });
           throw error;
         }
+      },
+
+      completeLoginFromCallback: async () => {
+        // Web-mode: the OAuth flow redirects back to /auth/callback?code=..&state=..
+        // on this origin. Read the params, complete the login, then clean the URL.
+        if (typeof window === "undefined") return false;
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get("code");
+        const state = params.get("state");
+        if (!code || !state) return false;
+
+        // Swap in clean state immediately so a reload doesn't re-process it.
+        const restore = window.location.pathname === "/auth/callback"
+          ? "/"
+          : window.location.pathname;
+        window.history.replaceState(window.history.state, "", restore);
+
+        if (state !== sessionStorage.getItem("oauth_state")) return false;
+
+        await get().completeLogin(code, state);
+        return true;
       },
 
       logout: () => {
