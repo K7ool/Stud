@@ -4,21 +4,34 @@
  * Uses OAuth 2.0 with PKCE to authenticate with OpenAI's auth server
  * and proxy requests through ChatGPT's Codex API endpoint.
  *
- * Web device-code only: OpenAI's Codex OAuth client locks its redirect URI to
- * http://localhost:1455, which a website cannot serve. The official headless
- * alternative is the "device auth" flow the Codex CLI uses (`codex login
- * --device-auth`). It needs no callback at all: the user opens a verification
- * URL, enters a one-time code in any browser, and the app polls OpenAI until
- * the user authorizes. All device-auth HTTP calls go through the serverless
- * proxy (/api/codex/device) because auth.openai.com does not send CORS headers
- * to the browser.
+ * Supports two sign-in flows:
+ *   1. Normal OAuth/PKCE browser redirect. By default this uses OpenAI's public
+ *      Codex client, whose redirect is locked to http://localhost:1455 (desktop
+ *      only). To use it on your own website, register your own OpenAI OAuth app
+ *      and set VITE_CODEX_CLIENT_ID + VITE_CODEX_REDIRECT_URI so the redirect
+ *      points at your domain.
+ *   2. Device-code flow (no callback). OpenAI's auth endpoints don't send CORS
+ *      headers, so these calls go through the /api/codex serverless proxy.
  */
 
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 // OAuth Configuration
-const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+// Public Codex CLI client (OpenAI's own). Its redirect is locked to localhost.
+const PUBLIC_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const ISSUER = "https://auth.openai.com";
+const REDIRECT_CALLBACK_PATH = "/auth/callback";
+
+// Allow overriding with a managed OpenAI OAuth app (e.g. for a deployed website).
+// Set these in your .env / Vercel env, or they fall back to the public Codex
+// client + localhost redirect.
+const CLIENT_ID =
+  (import.meta.env.VITE_CODEX_CLIENT_ID as string | undefined) || PUBLIC_CODEX_CLIENT_ID;
+const REDIRECT_URI =
+  (import.meta.env.VITE_CODEX_REDIRECT_URI as string | undefined) ||
+  `http://localhost:1455${REDIRECT_CALLBACK_PATH}`;
+const OAUTH_PORT = 1455;
+
 // Use Tauri HTTP plugin to bypass CORS when calling Codex API
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 const CODEX_PROXY_ENDPOINT = "/api/codex";
@@ -102,6 +115,107 @@ export function extractAccountIdFromClaims(claims: IdTokenClaims): string | unde
     claims["https://api.openai.com/auth"]?.chatgpt_account_id ||
     claims.organizations?.[0]?.id
   );
+}
+
+// Build OAuth authorize URL (normal browser redirect flow)
+function buildAuthorizeUrl(pkce: PkceCodes, state: string): string {
+  const params = new URLSearchParams({
+    response_type: "code",
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    scope: "openid profile email offline_access",
+    code_challenge: pkce.challenge,
+    code_challenge_method: "S256",
+    id_token_add_organizations: "true",
+    codex_cli_simplified_flow: "true",
+    state,
+    originator: "stud",
+  });
+  return `${ISSUER}/oauth/authorize?${params.toString()}`;
+}
+
+// Exchange authorization code for tokens
+async function exchangeCodeForTokens(
+  code: string,
+  pkce: PkceCodes
+): Promise<TokenResponse> {
+  const response = await fetch(`${ISSUER}/oauth/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: REDIRECT_URI,
+      client_id: CLIENT_ID,
+      code_verifier: pkce.verifier,
+    }).toString(),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Token exchange failed: ${error}`);
+  }
+
+  return response.json();
+}
+
+// Start OAuth login flow (normal browser redirect)
+export async function startOAuthLogin(): Promise<{ url: string; state: string }> {
+  const pkce = await generatePKCE();
+  const state = generateRandomString(32);
+  const url = buildAuthorizeUrl(pkce, state);
+
+  // Store the PKCE verifier so the callback can exchange the code.
+  // The verifier must survive a full page navigation, so persist it to
+  // localStorage; sessionStorage may be lost across redirects in some setups.
+  localStorage.setItem("oauth_pkce", JSON.stringify(pkce));
+  localStorage.setItem("oauth_state", state);
+
+  return { url, state };
+}
+
+// Handle OAuth callback (called when the browser redirects back to your site)
+export async function handleOAuthCallback(
+  code: string,
+  state: string
+): Promise<OAuthAuth> {
+  const storedState = localStorage.getItem("oauth_state");
+  const storedPkce = localStorage.getItem("oauth_pkce");
+
+  if (!storedState || !storedPkce) {
+    throw new Error("No pending OAuth request found");
+  }
+
+  if (state !== storedState) {
+    throw new Error("OAuth state mismatch - possible CSRF attack");
+  }
+
+  const pkce: PkceCodes = JSON.parse(storedPkce);
+
+  // Clean up
+  localStorage.removeItem("oauth_state");
+  localStorage.removeItem("oauth_pkce");
+
+  // Exchange code for tokens
+  const tokens = await exchangeCodeForTokens(code, pkce);
+
+  // Extract account ID from ID token
+  let accountId: string | undefined;
+  if (tokens.id_token) {
+    const claims = decodeJwt(tokens.id_token);
+    accountId = extractAccountIdFromClaims(claims);
+  }
+
+  const auth: OAuthAuth = {
+    type: "oauth",
+    access: tokens.access_token,
+    refresh: tokens.refresh_token,
+    expires: Date.now() + tokens.expires_in * 1000,
+    accountId,
+  };
+
+  saveAuth(auth);
+  return auth;
 }
 
 // Refresh access token
@@ -382,3 +496,5 @@ export const CODEX_MODELS = [
   { id: "o1-mini", name: "o1 Mini", description: "Fast o1", reasoning: true },
   { id: "o1-pro", name: "o1 Pro", description: "Pro o1", reasoning: true },
 ] as const;
+
+export { OAUTH_PORT, REDIRECT_URI, REDIRECT_CALLBACK_PATH };
