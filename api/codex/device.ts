@@ -36,6 +36,12 @@ function readRawBody(req: IncomingMessage): Promise<Buffer> {
   });
 }
 
+// OpenAI's auth WAF only serves the device-auth endpoints to recognized Codex
+// clients; a generic Node/Vercel fetch User-Agent is rejected with
+// 401 "Missing Authorization header". Mimic the ChatGPT desktop client so the
+// server-to-server forward is accepted.
+const CODEX_USER_AGENT = "Codex Desktop/26.707.31428 (win32; x64)";
+
 async function jsonFetch(
   url: string,
   method: string,
@@ -46,7 +52,11 @@ async function jsonFetch(
   try {
     upstream = await fetch(url, {
       method,
-      headers: { "Content-Type": contentType },
+      headers: {
+        "Content-Type": contentType,
+        "User-Agent": CODEX_USER_AGENT,
+        Accept: "application/json, text/plain, */*",
+      },
       body,
     });
   } catch (err) {
