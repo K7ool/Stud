@@ -649,16 +649,16 @@ handlers["/code/run"] = function(data)
 	local oldPrint = print
 	print = function(...)
 		local args, str = {...}, ""
-		for i, v in ipairs(args) do if i > 1 then str = str .. "\t" end; str = str .. tostring(v) end
+		for i, v in ipairs(args) do if i > 1 then str = str .. "\\t" end; str = str .. tostring(v) end
 		table.insert(out, str)
 	end
 	local ok, res = pcall(function()
 		local fn, err = loadstring(data.code); if not fn then error(err) end; return fn()
 	end)
 	print = oldPrint
-	if not ok then return { output = table.concat(out, "\n"), error = tostring(res) } end
+	if not ok then return { output = table.concat(out, "\\n"), error = tostring(res) } end
 	if res ~= nil then table.insert(out, tostring(res)) end
-	return { output = table.concat(out, "\n") }
+	return { output = table.concat(out, "\\n") }
 end
 
 local modifyingPaths = {
