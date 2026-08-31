@@ -61,8 +61,8 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
       apiKeys: {},
-      selectedModel: "gpt-5.6-luna",
-      selectedProvider: "openai" as ProviderType,
+      selectedModel: "opencode/big-pickle",
+      selectedProvider: "opencode" as ProviderType,
       appSettings: DEFAULT_APP_SETTINGS,
 
       setApiKey: (provider, key) =>

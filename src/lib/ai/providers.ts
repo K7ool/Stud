@@ -351,7 +351,11 @@ export async function chat(options: ChatOptions) {
         const result = streamText({
           model: providerInstance(model),
           system: systemExtension ? `${ROBLOX_SYSTEM_PROMPT}\n\n${systemExtension}` : ROBLOX_SYSTEM_PROMPT,
-          tools: robloxTools,
+          // Free OpenCode Zen models don't reliably support tool/function
+          // calling, so omit the Roblox tool definitions for them to avoid
+          // 400s on the gateway. They still get the full system prompt so
+          // they answer Roblox questions competently.
+          ...(provider === "opencode" ? {} : { tools: robloxTools }),
           stopWhen: stepCountIs(40), // Cap at 40 steps for responsive replies
           maxRetries: 0,
           messages: messages.map((m) => ({
