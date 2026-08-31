@@ -1,13 +1,10 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   OAuthAuth,
   DeviceCodeData,
   getStoredAuth,
   clearAuth,
-  startOAuthLogin,
-  handleOAuthCallback,
   startDeviceCode,
   pollDeviceCode,
   completeDeviceCodeLogin,
@@ -25,14 +22,11 @@ interface AuthState {
   oauthAuth: OAuthAuth | null;
   isLoggingIn: boolean;
   loginError: string | null;
-  loginUrl: string | null; // URL to show as fallback
   
   // Actions
   setAuthMethod: (method: AuthMethod) => void;
   startLogin: () => Promise<void>;
-  completeLogin: (code: string, state: string) => Promise<void>;
   logout: () => void;
-  checkOAuthCallback: () => Promise<boolean>;
   cancelLogin: () => void;
 
   // Device-code flow (works on web and desktop)
@@ -53,7 +47,6 @@ export const useAuthStore = create<AuthState>()(
       oauthAuth: getStoredAuth(),
       isLoggingIn: false,
       loginError: null,
-      loginUrl: null,
       deviceCode: null,
       deviceCodePending: false,
 
@@ -62,30 +55,14 @@ export const useAuthStore = create<AuthState>()(
       },
 
       startLogin: async () => {
-        set({ isLoggingIn: true, loginError: null, loginUrl: null });
-        // On the web, OpenAI's Codex client forces a localhost:1455 callback that a
-        // browser cannot serve, so the PKCE redirect cannot work. Use the official
-        // device-code flow instead (no callback needed).
-        if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
-          await get().startDeviceLogin();
-          return;
-        }
-        try {
-          const { url } = await startOAuthLogin();
-          // Store the URL for fallback display
-          set({ loginUrl: url });
-          // Try to open in default browser using Tauri's opener
-          await openUrl(url);
-        } catch (error) {
-          // Even if browser open fails, we have the URL to show
-          set({ 
-            loginError: error instanceof Error ? error.message : String(error),
-          });
-        }
+        // The ChatGPT Codex client forces a localhost:1455 callback that a
+        // website cannot serve, so we always use the official device-code flow
+        // (no callback needed) regardless of platform.
+        await get().startDeviceLogin();
       },
 
       startDeviceLogin: async () => {
-        set({ isLoggingIn: true, loginError: null, loginUrl: null, deviceCodePending: true });
+        set({ isLoggingIn: true, loginError: null, deviceCodePending: true });
         try {
           const deviceCode = await startDeviceCode();
           sessionStorage.setItem("codex_device_auth_id", deviceCode.device_auth_id);
@@ -144,32 +121,11 @@ export const useAuthStore = create<AuthState>()(
           deviceCodePending: false,
           isLoggingIn: false,
           loginError: null,
-          loginUrl: null,
         });
       },
 
       cancelLogin: () => {
-        set({ isLoggingIn: false, loginUrl: null, loginError: null });
-      },
-
-      completeLogin: async (code: string, state: string) => {
-        set({ isLoggingIn: true, loginError: null });
-        try {
-          const auth = await handleOAuthCallback(code, state);
-          set({
-            oauthAuth: auth,
-            isLoggingIn: false,
-            authMethod: "oauth",
-          });
-          // Fetch models after successful login
-          useModelsStore.getState().fetchModels();
-        } catch (error) {
-          set({ 
-            loginError: error instanceof Error ? error.message : String(error),
-            isLoggingIn: false 
-          });
-          throw error;
-        }
+        set({ isLoggingIn: false, loginError: null });
       },
 
       logout: () => {
@@ -183,37 +139,6 @@ export const useAuthStore = create<AuthState>()(
           deviceCode: null,
           deviceCodePending: false,
         });
-      },
-
-      checkOAuthCallback: async () => {
-        // The local OAuth callback server only exists in the Tauri desktop
-        // app. In web mode there is no localhost:1455 listener, so polling it
-        // only produces ERR_CONNECTION_REFUSED noise — skip it entirely.
-        if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
-          return false;
-        }
-        // Poll the OAuth callback server for pending auth data
-        try {
-          const response = await fetch("http://localhost:1455/auth/poll");
-          if (!response.ok) return false;
-          
-          const data = await response.json();
-          if (!data.pending) return false;
-          
-          const { code, state } = data;
-          
-          // Clear the callback data from the server
-          await fetch("http://localhost:1455/auth/clear", { method: "POST" });
-          
-          if (code && state) {
-            await get().completeLogin(code, state);
-            return true;
-          }
-        } catch (error) {
-          // Server not running or network error - ignore
-          console.debug("[OAuth] Poll failed:", error);
-        }
-        return false;
       },
 
       isOAuthAuthenticated: () => {
@@ -233,23 +158,15 @@ export const useAuthStore = create<AuthState>()(
   )
 );
 
-// Poll for OAuth callback completion
+// Poll for device-code authorization completion
 export function useOAuthCallbackPoller() {
-  const { checkOAuthCallback, isLoggingIn } = useAuthStore();
+  const { isLoggingIn } = useAuthStore();
   
   // Check periodically while logging in
   if (typeof window !== "undefined" && isLoggingIn) {
     const interval = setInterval(async () => {
-      let completed = false;
-      // On the web use the device-code poller; on desktop poll the local callback
-      // server. In desktop mode there is no deviceCode, so fall back to the server.
-      const isWeb = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
-      if (isWeb) {
-        const { pollDeviceLogin } = useAuthStore.getState();
-        completed = await pollDeviceLogin();
-      } else {
-        completed = await checkOAuthCallback();
-      }
+      const { pollDeviceLogin } = useAuthStore.getState();
+      const completed = await pollDeviceLogin();
       if (completed) {
         clearInterval(interval);
       }

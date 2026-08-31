@@ -3,6 +3,15 @@
  *
  * Uses OAuth 2.0 with PKCE to authenticate with OpenAI's auth server
  * and proxy requests through ChatGPT's Codex API endpoint.
+ *
+ * Web device-code only: OpenAI's Codex OAuth client locks its redirect URI to
+ * http://localhost:1455, which a website cannot serve. The official headless
+ * alternative is the "device auth" flow the Codex CLI uses (`codex login
+ * --device-auth`). It needs no callback at all: the user opens a verification
+ * URL, enters a one-time code in any browser, and the app polls OpenAI until
+ * the user authorizes. All device-auth HTTP calls go through the serverless
+ * proxy (/api/codex/device) because auth.openai.com does not send CORS headers
+ * to the browser.
  */
 
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
@@ -14,8 +23,6 @@ const ISSUER = "https://auth.openai.com";
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 const CODEX_PROXY_ENDPOINT = "/api/codex";
 const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
-const OAUTH_PORT = 1455;
-const REDIRECT_URI = `http://localhost:${OAUTH_PORT}/auth/callback`;
 
 // Token storage key
 const AUTH_STORAGE_KEY = "stud_chatgpt_auth";
@@ -97,48 +104,6 @@ export function extractAccountIdFromClaims(claims: IdTokenClaims): string | unde
   );
 }
 
-// Build OAuth authorize URL
-function buildAuthorizeUrl(pkce: PkceCodes, state: string): string {
-  const params = new URLSearchParams({
-    response_type: "code",
-    client_id: CLIENT_ID,
-    redirect_uri: REDIRECT_URI,
-    scope: "openid profile email offline_access",
-    code_challenge: pkce.challenge,
-    code_challenge_method: "S256",
-    id_token_add_organizations: "true",
-    codex_cli_simplified_flow: "true",
-    state,
-    originator: "stud",
-  });
-  return `${ISSUER}/oauth/authorize?${params.toString()}`;
-}
-
-// Exchange authorization code for tokens
-async function exchangeCodeForTokens(
-  code: string,
-  pkce: PkceCodes
-): Promise<TokenResponse> {
-  const response = await fetch(`${ISSUER}/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: REDIRECT_URI,
-      client_id: CLIENT_ID,
-      code_verifier: pkce.verifier,
-    }).toString(),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Token exchange failed: ${error}`);
-  }
-
-  return response.json();
-}
-
 // Refresh access token
 async function refreshAccessToken(refreshToken: string): Promise<TokenResponse> {
   const response = await fetch(`${ISSUER}/oauth/token`, {
@@ -202,7 +167,7 @@ export async function getValidAccessToken(): Promise<string | null> {
   try {
     console.log("[Codex] Refreshing access token...");
     const tokens = await refreshAccessToken(auth.refresh);
-    
+
     let accountId = auth.accountId;
     if (tokens.id_token) {
       const claims = decodeJwt(tokens.id_token);
@@ -216,7 +181,7 @@ export async function getValidAccessToken(): Promise<string | null> {
       expires: Date.now() + tokens.expires_in * 1000,
       accountId,
     };
-    
+
     saveAuth(newAuth);
     return newAuth.access;
   } catch (error) {
@@ -226,73 +191,7 @@ export async function getValidAccessToken(): Promise<string | null> {
   }
 }
 
-// Start OAuth login flow
-export async function startOAuthLogin(): Promise<{ url: string; state: string }> {
-  const pkce = await generatePKCE();
-  const state = generateRandomString(32);
-  const url = buildAuthorizeUrl(pkce, state);
-
-  // Store for callback handling
-  sessionStorage.setItem("oauth_pkce", JSON.stringify(pkce));
-  sessionStorage.setItem("oauth_state", state);
-  
-  return { url, state };
-}
-
-// Handle OAuth callback (called when redirect comes back)
-export async function handleOAuthCallback(
-  code: string,
-  state: string
-): Promise<OAuthAuth> {
-  const storedState = sessionStorage.getItem("oauth_state");
-  const storedPkce = sessionStorage.getItem("oauth_pkce");
-
-  if (!storedState || !storedPkce) {
-    throw new Error("No pending OAuth request found");
-  }
-
-  if (state !== storedState) {
-    throw new Error("OAuth state mismatch - possible CSRF attack");
-  }
-
-  const pkce: PkceCodes = JSON.parse(storedPkce);
-
-  // Clean up session storage
-  sessionStorage.removeItem("oauth_state");
-  sessionStorage.removeItem("oauth_pkce");
-
-  // Exchange code for tokens
-  const tokens = await exchangeCodeForTokens(code, pkce);
-
-  // Extract account ID from ID token
-  let accountId: string | undefined;
-  if (tokens.id_token) {
-    const claims = decodeJwt(tokens.id_token);
-    accountId = extractAccountIdFromClaims(claims);
-  }
-
-  const auth: OAuthAuth = {
-    type: "oauth",
-    access: tokens.access_token,
-    refresh: tokens.refresh_token,
-    expires: Date.now() + tokens.expires_in * 1000,
-    accountId,
-  };
-
-  saveAuth(auth);
-  return auth;
-}
-
-// ---- Device-code (device auth) flow for web ----
-//
-// OpenAI's Codex OAuth client locks its redirect URI to http://localhost:1455,
-// which a web browser cannot serve. The official headless alternative is the
-// "device auth" flow the Codex CLI uses (`codex login --device-auth`). It needs
-// no callback at all: the user opens a verification URL, enters a one-time code
-// in any browser, and the app polls OpenAI until the user authorizes.
-//
-// All device-auth HTTP calls go through the serverless proxy (/api/codex/device)
-// because auth.openai.com does not send CORS headers to the browser.
+// ---- Device-code (device auth) flow ----
 
 export interface DeviceCodeData {
   device_auth_id: string;
@@ -330,7 +229,7 @@ export async function startDeviceCode(): Promise<DeviceCodeData> {
 }
 
 // Poll OpenAI until the user has authorized, then return the PKCE + auth code.
-// Resolves `true` when authorization is complete, `false` while still pending.
+// Resolves with the poll result when authorization is complete, `null` while still pending.
 export async function pollDeviceCode(
   deviceAuthId: string,
   userCode: string
@@ -483,5 +382,3 @@ export const CODEX_MODELS = [
   { id: "o1-mini", name: "o1 Mini", description: "Fast o1", reasoning: true },
   { id: "o1-pro", name: "o1 Pro", description: "Pro o1", reasoning: true },
 ] as const;
-
-export { OAUTH_PORT, REDIRECT_URI };

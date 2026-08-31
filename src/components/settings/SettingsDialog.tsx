@@ -182,31 +182,17 @@ function ChatGPTAuth() {
   const {
     isLoggingIn,
     loginError,
-    loginUrl,
     startLogin,
     logout,
-    cancelLogin,
     cancelDeviceLogin,
     deviceCode,
     isOAuthAuthenticated,
   } = useAuthStore();
   const { codexModels, isLoading: isLoadingModels, refreshModels, lastFetched } = useModelsStore();
 
-  const [copied, setCopied] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [polling, setPolling] = useState(false);
   const isAuthenticated = isOAuthAuthenticated();
-  // ChatGPT OAuth's normal redirect is locked to localhost:1455, so the web uses
-  // the official device-code flow instead (no callback needed).
-  const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
-
-  const handleCopyUrl = async () => {
-    if (loginUrl) {
-      await navigator.clipboard.writeText(loginUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
 
   const handleCopyCode = async () => {
     if (!deviceCode) return;
@@ -224,14 +210,8 @@ function ChatGPTAuth() {
   };
 
   const handleStart = () => {
-    if (isWebMode) {
-      // Device-code flow has no callback; just start it.
-      cancelLogin();
-      const { startDeviceLogin } = useAuthStore.getState();
-      startDeviceLogin();
-    } else {
-      startLogin();
-    }
+    // Device-code flow (no localhost callback needed for the web).
+    startLogin();
   };
 
   return (
@@ -253,7 +233,7 @@ function ChatGPTAuth() {
       
       <p className="text-xs text-muted-foreground">
         Sign in with your ChatGPT Plus or Pro subscription. No API key needed!
-        {isWebMode && " On the web we use the secure device-code flow."}
+        {" We use the secure device-code flow."}
       </p>
 
       {loginError && (
@@ -302,7 +282,7 @@ function ChatGPTAuth() {
           </div>
         </div>
       ) : isLoggingIn ? (
-        isWebMode && deviceCode ? (
+        deviceCode ? (
           /* Device-code UI */
           <div className="space-y-3">
             <div className="rounded-xl bg-primary/5 border border-primary/20 p-3 space-y-3">
@@ -365,53 +345,21 @@ function ChatGPTAuth() {
           </div>
         ) : (
         <div className="space-y-3">
-          {/* Signing in state with URL fallback */}
+          {/* Loading device code */}
           <div className="flex items-center justify-between p-3 bg-primary/5 rounded-xl">
             <div className="flex items-center gap-2">
               <Loader variant="dots" size="sm" />
-              <Loader variant="text-shimmer" text="Signing in" size="sm" />
+              <Loader variant="text-shimmer" text="Requesting sign-in" size="sm" />
             </div>
             <Button
               variant="ghost"
               size="sm"
-              onClick={cancelLogin}
+              onClick={cancelDeviceLogin}
               className="text-muted-foreground hover:text-foreground"
             >
               <X className="w-4 h-4" />
             </Button>
           </div>
-
-          {/* URL fallback */}
-          {loginUrl && (
-            <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">
-                Browser didn't open? Copy this URL and paste it in your browser:
-              </p>
-              <div className="flex gap-2">
-                <Input
-                  value={loginUrl}
-                  readOnly
-                  className="text-xs font-mono rounded-lg h-9"
-                />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleCopyUrl}
-                  className="shrink-0 h-9 w-9 p-0 rounded-lg"
-                >
-                  {copied ? (
-                    <Check className="w-4 h-4 text-green-600" />
-                  ) : (
-                    <Copy className="w-4 h-4" />
-                  )}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          <p className="text-xs text-muted-foreground text-center">
-            Complete sign-in in your browser. This window will update automatically.
-          </p>
         </div>
         )
       ) : (
