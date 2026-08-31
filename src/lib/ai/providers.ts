@@ -287,6 +287,15 @@ export async function chat(options: ChatOptions) {
 
   console.log("[Chat] Starting chat with:", { model, provider, messageCount: messages.length });
 
+  // Retry-loop state is hoisted here so both the try body and the outer catch
+  // can read it (avoids a ReferenceError from a block-scoped `let`).
+  let attempt = 0;
+  let lastError: unknown = null;
+  let fullText = "";
+  let gotOutput = false;
+  let gotToolCall = false;
+  let reportedError = false;
+
   try {
     // Use Codex chat for ChatGPT Plus/Pro (bypasses CORS via Tauri HTTP plugin)
     if (provider === "codex") {
@@ -321,13 +330,6 @@ export async function chat(options: ChatOptions) {
     // Cap retries for the controlled loop below. Billing/auth must be 0.
     const RETRY_LIMIT = 2;
     const RETRY_DELAY_MS = 800;
-
-    let attempt = 0;
-    let lastError: unknown = null;
-    let fullText = "";
-    let gotOutput = false;
-    let gotToolCall = false;
-    let reportedError = false;
 
     while (attempt <= RETRY_LIMIT) {
       if (attempt > 0) {
