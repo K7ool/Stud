@@ -42,12 +42,17 @@ export function ConnectionPopup({ open, status, retrying, onRetry, onDismiss }: 
       ? "Your Roblox Studio plugin is outdated"
       : status === "old_backend"
       ? "Your plugin points to an outdated backend"
+      : status === "relay_unbacked"
+      ? "Relay is missing a shared store"
       : status === "bridge_only"
       ? "Bridge connected but Roblox Studio is not connected"
       : "Roblox Studio is not connected";
 
   const isProblemState =
-    status === "mismatch" || status === "outdated" || status === "old_backend";
+    status === "mismatch" ||
+    status === "outdated" ||
+    status === "old_backend" ||
+    status === "relay_unbacked";
 
   return (
     <Dialog open={shouldShow} onOpenChange={() => onDismiss()}>
@@ -132,6 +137,26 @@ export function ConnectionPopup({ open, status, retrying, onRetry, onDismiss }: 
                 ) : null}
                 <br />
                 Re-download the plugin to rematch, then restart Studio.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {shouldShow && status === "relay_unbacked" && (
+          <div className="flex items-start gap-2.5 mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+            <div className="text-xs leading-relaxed text-amber-700 dark:text-amber-300">
+              <p className="font-semibold mb-0.5">The relay needs a shared store</p>
+              <p>
+                Commands and results are stored per-server-instance because Upstash
+                Redis is not configured. On Vercel, requests can hit different
+                instances, so commands never reach Studio even though the plugin
+                looks connected.
+                <br />
+                <br />
+                Add a free Upstash Redis database to this Vercel project and set{" "}
+                <code className="break-all">KV_REST_API_URL</code> and{" "}
+                <code className="break-all">KV_REST_API_TOKEN</code>, then redeploy.
               </p>
             </div>
           </div>

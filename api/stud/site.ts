@@ -18,7 +18,7 @@
  *
  * No sensitive tokens are exposed.
  */
-import { getConnection, isConnectionAlive, CONNECTION_TIMEOUT_MS, getOtherActiveSites } from "./cache";
+import { getConnection, isConnectionAlive, CONNECTION_TIMEOUT_MS, getOtherActiveSites, isKvConfigured } from "./cache";
 import { PLUGIN_VERSION, MIN_PLUGIN_VERSION } from "./version";
 
 export const config = { runtime: "edge" };
@@ -58,6 +58,7 @@ export default async function handler(req: Request): Promise<Response> {
   const otherActiveSites = exists
     ? []
     : await getOtherActiveSites(site);
+  const sharedStore = isKvConfigured();
 
   let outdated = false;
   let oldBackend = false;
@@ -83,6 +84,11 @@ export default async function handler(req: Request): Promise<Response> {
     outdated,
     oldBackend,
     serverBase,
+    // Whether the relay's commands/results/sessions are stored in a shared
+    // store (Upstash Redis) visible to every function instance. When false the
+    // relay falls back to per-instance memory, so a plugin can appear connected
+    // while requests never round-trip.
+    sharedStore,
     session: exists
       ? {
           pluginVersion: exists.pluginVersion,

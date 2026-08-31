@@ -203,7 +203,8 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
       status === "bridge_only" ||
       status === "mismatch" ||
       status === "outdated" ||
-      status === "old_backend"
+      status === "old_backend" ||
+      status === "relay_unbacked"
     ) {
       if (step === 1) return "complete";
       if (step === 2) return "active";
@@ -417,6 +418,10 @@ function StatusBadge({ status, gameInfo }: { status: ConnectionStatus; gameInfo?
     old_backend: {
       color: "bg-amber-500",
       label: "Old backend",
+    },
+    relay_unbacked: {
+      color: "bg-amber-500",
+      label: "Relay missing shared store",
     },
     connected: {
       color: "bg-green-500",

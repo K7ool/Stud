@@ -13,7 +13,8 @@ export type ConnectionStatus =
   | "reconnecting"
   | "mismatch"
   | "outdated"
-  | "old_backend";
+  | "old_backend"
+  | "relay_unbacked";
 
 export interface RobloxState {
   status: ConnectionStatus;
@@ -107,7 +108,14 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
         let status: ConnectionStatus = "bridge_only";
         let error = "Bridge server running but Roblox Studio not connected";
 
-        if (conn.connected) {
+        if (conn.sharedStore === false) {
+          // The relay is not backed by a shared store (Upstash not configured).
+          // On Vercel, push/poll/respond can hit different instances, so
+          // commands silently vanish even though the plugin is connected.
+          status = "relay_unbacked";
+          error =
+            "Relay is not backed by a shared store. Add Upstash KV (KV_REST_API_URL, KV_REST_API_TOKEN) to the Vercel project so commands reach the plugin.";
+        } else if (conn.connected) {
           // Session is alive for this site, so /ping should round-trip. If the
           // ping check above failed it's a transient issue.
           status = "bridge_only";
@@ -134,13 +142,32 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
         // If another site's plugin IS live, that's a definitive site mismatch —
         // the installed plugin is baked for a different site. If no site is
         // active anywhere, it's just "no plugin connected yet".
-        if (conn?.otherActiveSites && conn.otherActiveSites.length > 0) {
-          set({
-            status: "mismatch",
-            lastCheck: now,
-            error: `Your plugin is connected to a different site (${conn.otherActiveSites[0]}). Re-download the plugin for this browser's site (${site}).`,
-            consecutiveFailures: state.consecutiveFailures + 1,
-          });
+        if (conn) {
+          if (conn.sharedStore === false) {
+            set({
+              status: "relay_unbacked",
+              lastCheck: now,
+              error:
+                "Relay is not backed by a shared store. Add Upstash KV (KV_REST_API_URL, KV_REST_API_TOKEN) to the Vercel project so plugin commands are reliably delivered.",
+              consecutiveFailures: state.consecutiveFailures + 1,
+            });
+            return;
+          }
+          if (conn.otherActiveSites && conn.otherActiveSites.length > 0) {
+            set({
+              status: "mismatch",
+              lastCheck: now,
+              error: `Your plugin is connected to a different site (${conn.otherActiveSites[0]}). Re-download the plugin for this browser's site (${site}).`,
+              consecutiveFailures: state.consecutiveFailures + 1,
+            });
+          } else {
+            set({
+              status: "bridge_only",
+              lastCheck: now,
+              error: "Bridge server running but Roblox Studio not connected",
+              consecutiveFailures: state.consecutiveFailures + 1,
+            });
+          }
         } else {
           set({
             status: "bridge_only",

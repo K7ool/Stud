@@ -26,6 +26,14 @@ export interface StoredResponse {
 const KV_URL = process.env.KV_REST_API_URL;
 const KV_TOKEN = process.env.KV_REST_API_TOKEN;
 
+// True only when the relay is backed by a real shared store (Upstash Redis).
+// When false, the in-memory fallback is used — which is per-Edge/Node instance
+// and can silently lose commands/results when push/poll/respond land on
+// different instances, producing "Bridge connected but Studio not connected".
+export function isKvConfigured(): boolean {
+  return !!KV_URL && !!KV_TOKEN;
+}
+
 // In-memory fallback for local dev or when KV env vars are missing.
 const memStore = new Map<string, unknown>();
 
