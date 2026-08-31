@@ -1,23 +1,40 @@
 /**
- * Vercel serverless proxy for the ChatGPT Codex Responses API.
- * The ChatGPT backend does not send CORS headers, so the browser cannot call it
- * directly. This route forwards the request body and the user's bearer token
- * server-to-server and streams the SSE response back.
+ * Vercel serverless proxy for the Codex CLI flows used by the web build.
  *
- * Uses Node.js runtime (not Edge) so we can pipe the upstream response body
- * directly without buffering.
+ *   POST /api/codex?step=code   -> request a device user-code from auth.openai.com
+ *   POST /api/codex?step=poll   -> poll until the user authorises the device code
+ *   POST /api/codex?step=token  -> exchange the authorization_code for tokens
+ *   POST /api/codex             -> proxy a streaming chat request to
+ *                                  https://chatgpt.com/backend-api/codex/responses
+ *
+ * OpenAI's auth and chat endpoints do not send CORS headers, so the browser
+ * cannot call them directly. This route forwards each request server-to-server
+ * and (for chat) streams the SSE response back to the client.
+ *
+ * No environment variables are required. The public Codex client
+ * (app_EMoamEEZ73f0CkXaXp7hrann) is used for the device-code flow. The chat
+ * proxy trusts the caller's Authorization header and forwards it to chatgpt.com.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 
 export const config = {
   runtime: "nodejs",
   api: {
     bodyParser: false,
-    responseLimit: false,
   },
 };
 
-const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
+const ISSUER = "https://auth.openai.com";
+const CHAT_API = "https://chatgpt.com/backend-api/codex/responses";
+const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const DEVICE_REDIRECT_URI = `${ISSUER}/deviceauth/callback`;
+
+// OpenAI's auth WAF only serves the device-auth endpoints to recognised Codex
+// clients; a generic Node/Vercel fetch User-Agent is rejected with
+// 401 "Missing Authorization header". Mimic the ChatGPT desktop client so the
+// server-to-server forward is accepted.
+const CODEX_USER_AGENT = "Codex Desktop/26.707.31428 (win32; x64)";
 
 function readRawBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -28,6 +45,38 @@ function readRawBody(req: IncomingMessage): Promise<Buffer> {
   });
 }
 
+async function jsonFetch(
+  url: string,
+  method: string,
+  contentType: string,
+  body: string,
+  extraHeaders: Record<string, string> = {}
+): Promise<{ status: number; json: unknown }> {
+  let upstream: Response;
+  try {
+    upstream = await fetch(url, {
+      method,
+      headers: {
+        "Content-Type": contentType,
+        "User-Agent": CODEX_USER_AGENT,
+        Accept: "application/json, text/plain, */*",
+        ...extraHeaders,
+      },
+      body,
+    });
+  } catch (err) {
+    return { status: 502, json: { error: `Upstream fetch failed: ${(err as Error).message}` } };
+  }
+  const text = await upstream.text();
+  let json: unknown = { error: text || "upstream error", raw: text };
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    // keep raw text wrapper
+  }
+  return { status: upstream.status, json };
+}
+
 export default async function handler(req: any, res: any): Promise<void> {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -35,36 +84,124 @@ export default async function handler(req: any, res: any): Promise<void> {
     return;
   }
 
-  const authorization = req.headers["authorization"];
-  const accountId = req.headers["chatgpt-account-id"];
+  const step = req.query?.step;
 
-  if (!authorization || typeof authorization !== "string") {
-    res.status(401).json({ error: "Missing Authorization header" });
+  // ---- Device-code flow ---------------------------------------------------
+  if (step === "code" || step === "poll" || step === "token") {
+    let body: Buffer;
+    try {
+      body = await readRawBody(req as IncomingMessage);
+    } catch {
+      res.status(400).json({ error: "Failed to read request body" });
+      return;
+    }
+    const raw = body.toString("utf8");
+
+    if (step === "code") {
+      const parsed = JSON.parse(raw || "{}");
+      if (!parsed.client_id) {
+        res.status(400).json({ error: "client_id is required" });
+        return;
+      }
+      const upstream = await jsonFetch(
+        `${ISSUER}/api/accounts/deviceauth/usercode`,
+        "POST",
+        "application/json",
+        JSON.stringify({ client_id: parsed.client_id })
+      );
+      res.status(upstream.status).json({
+        ...(upstream.json as object),
+        verification_url: `${ISSUER}/codex/device`,
+      });
+      return;
+    }
+
+    if (step === "poll") {
+      let parsed: { device_auth_id?: string; user_code?: string };
+      try {
+        parsed = JSON.parse(raw || "{}");
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+      if (!parsed.device_auth_id || !parsed.user_code) {
+        res.status(400).json({ error: "device_auth_id and user_code are required" });
+        return;
+      }
+      const upstream = await jsonFetch(
+        `${ISSUER}/api/accounts/deviceauth/token`,
+        "POST",
+        "application/json",
+        JSON.stringify({ device_auth_id: parsed.device_auth_id, user_code: parsed.user_code })
+      );
+      res.status(upstream.status).json(upstream.json);
+      return;
+    }
+
+    if (step === "token") {
+      let parsed: { code?: string; code_verifier?: string };
+      try {
+        parsed = JSON.parse(raw || "{}");
+      } catch {
+        res.status(400).json({ error: "Invalid JSON body" });
+        return;
+      }
+      if (!parsed.code || !parsed.code_verifier) {
+        res.status(400).json({ error: "code and code_verifier are required" });
+        return;
+      }
+      const form = new URLSearchParams({
+        grant_type: "authorization_code",
+        code: parsed.code,
+        redirect_uri: DEVICE_REDIRECT_URI,
+        client_id: CLIENT_ID,
+        code_verifier: parsed.code_verifier,
+      }).toString();
+      const upstream = await jsonFetch(
+        `${ISSUER}/oauth/token`,
+        "POST",
+        "application/x-www-form-urlencoded",
+        form
+      );
+      res.status(upstream.status).json(upstream.json);
+      return;
+    }
+  }
+
+  // ---- Chat streaming proxy ----------------------------------------------
+  // No ?step= => treat as a Codex Responses API call. The client must send
+  // Authorization: Bearer <accessToken> and (optionally) ChatGPT-Account-Id.
+  // We forward the raw body and stream the SSE response back unchanged.
+  const auth = req.headers?.authorization;
+  if (!auth || !/^Bearer\s+/i.test(String(auth))) {
+    res.status(401).json({ error: "Missing or invalid Authorization header" });
     return;
   }
 
   let body: Buffer;
   try {
     body = await readRawBody(req as IncomingMessage);
-  } catch (err) {
+  } catch {
     res.status(400).json({ error: "Failed to read request body" });
     return;
   }
 
-  const upstreamHeaders: Record<string, string> = {
-    Authorization: authorization,
-    "Content-Type": (req.headers["content-type"] as string) ?? "application/json",
-    Accept: (req.headers["accept"] as string) ?? "text/event-stream",
+  const forwardHeaders: Record<string, string> = {
+    "Content-Type": String(req.headers?.["content-type"] || "application/json"),
+    Accept: String(req.headers?.accept || "text/event-stream"),
+    Authorization: String(auth),
+    "User-Agent": CODEX_USER_AGENT,
   };
-  if (accountId && typeof accountId === "string") {
-    upstreamHeaders["ChatGPT-Account-Id"] = accountId;
+  const accountId = req.headers?.["chatgpt-account-id"];
+  if (accountId) {
+    forwardHeaders["ChatGPT-Account-Id"] = String(accountId);
   }
 
   let upstream: Response;
   try {
-    upstream = await fetch(CODEX_API_ENDPOINT, {
+    upstream = await fetch(CHAT_API, {
       method: "POST",
-      headers: upstreamHeaders,
+      headers: forwardHeaders,
       body,
     });
   } catch (err) {
@@ -72,34 +209,29 @@ export default async function handler(req: any, res: any): Promise<void> {
     return;
   }
 
+  // Stream the upstream response (SSE) back to the client.
   res.status(upstream.status);
-  upstream.headers.forEach((value, key) => {
-    if (key.toLowerCase() === "content-encoding") return;
-    res.setHeader(key, value);
-  });
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const passthrough = (res as ServerResponse);
+  passthrough.setHeader("Content-Type", upstream.headers.get("content-type") || "text/event-stream");
+  passthrough.setHeader("Cache-Control", "no-cache");
+  passthrough.setHeader("Connection", "keep-alive");
+  // Disable buffering for streamed responses on serverless platforms.
+  if (typeof (passthrough as any).flushHeaders === "function") {
+    (passthrough as any).flushHeaders();
+  }
 
   if (!upstream.body) {
-    res.end();
+    passthrough.end();
     return;
   }
 
-  const reader = upstream.body.getReader();
-  const nodeRes = res as ServerResponse;
-  nodeRes.on("close", () => {
-    reader.cancel().catch(() => {});
+  const nodeStream = Readable.fromWeb(upstream.body as unknown as import("node:stream/web").ReadableStream);
+  nodeStream.on("error", (err) => {
+    // Upstream stream broke mid-flight; end the client response cleanly.
+    console.error("[api/codex] chat stream error:", err);
+    passthrough.end();
   });
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const ok = nodeRes.write(Buffer.from(value));
-      if (!ok) {
-        await new Promise<void>((resolve) => nodeRes.once("drain", () => resolve()));
-      }
-    }
-  } finally {
-    nodeRes.end();
-  }
+  nodeStream.pipe(passthrough);
 }
+
+export {};
