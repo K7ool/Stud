@@ -3,7 +3,8 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ConnectionStatus } from "@/stores/roblox";
-import { RefreshCw, WifiOff, Loader2, X } from "lucide-react";
+import { getStudioSiteId } from "@/lib/roblox/client";
+import { RefreshCw, WifiOff, Loader2, X, Download } from "lucide-react";
 
 interface ConnectionPopupProps {
   open: boolean;
@@ -63,7 +64,24 @@ export function ConnectionPopup({ open, status, retrying, onRetry, onDismiss }: 
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 mt-4">
+        <div className="flex items-center justify-end gap-2 mt-4 flex-wrap">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const url = `/api/stud/plugin?site=${getStudioSiteId()}`;
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "stud-bridge.server.lua";
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+            }}
+            className="gap-1.5"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Download plugin
+          </Button>
           <Button
             variant="outline"
             size="sm"

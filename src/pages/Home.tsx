@@ -703,11 +703,28 @@ function WebMainMenu() {
           )}
 
           <p className="text-xs text-muted-foreground text-center">
-            For Roblox Studio editing, install the{" "}
-            <a className="underline hover:text-foreground" href={`/api/stud/plugin?site=${getStudioSiteId()}`} target="_blank" rel="noreferrer">
-              stud-bridge plugin
-            </a>{" "}
-            and pair it with this site.
+            For Roblox Studio editing, install the stud-bridge plugin.
+          </p>
+          <Button
+            variant="outline"
+            onClick={() => {
+              const siteId = getStudioSiteId();
+              const url = `/api/stud/plugin?site=${siteId}`;
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "stud-bridge.server.lua";
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+            }}
+            className="w-full h-11 rounded-2xl"
+          >
+            <Download className="w-4 h-4 mr-2" />
+            Download stud-bridge plugin
+          </Button>
+          <p className="text-[10px] text-muted-foreground text-center">
+            Save to your Roblox Plugins folder, then restart Studio. Site ID:{" "}
+            <span className="font-mono">{getStudioSiteId()}</span>
           </p>
         </div>
       </main>
