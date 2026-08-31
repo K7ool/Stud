@@ -24,12 +24,18 @@ const REDIRECT_CALLBACK_PATH = "/auth/callback";
 
 // Allow overriding with a managed OpenAI OAuth app (e.g. for a deployed website).
 // Set these in your .env / Vercel env, or they fall back to the public Codex
-// client + localhost redirect.
+// client + a localhost redirect. To make the OAuth redirect come back to your
+// own deployed domain, register a custom OpenAI OAuth client whose registered
+// redirect matches VITE_CODEX_REDIRECT_URI and set its client ID in
+// VITE_CODEX_CLIENT_ID.
 const CLIENT_ID =
   (import.meta.env.VITE_CODEX_CLIENT_ID as string | undefined) || PUBLIC_CODEX_CLIENT_ID;
+const DEFAULT_REDIRECT_URI =
+  typeof window !== "undefined" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1"
+    ? `${window.location.origin}${REDIRECT_CALLBACK_PATH}`
+    : `http://localhost:1455${REDIRECT_CALLBACK_PATH}`;
 const REDIRECT_URI =
-  (import.meta.env.VITE_CODEX_REDIRECT_URI as string | undefined) ||
-  `http://localhost:1455${REDIRECT_CALLBACK_PATH}`;
+  (import.meta.env.VITE_CODEX_REDIRECT_URI as string | undefined) || DEFAULT_REDIRECT_URI;
 const OAUTH_PORT = 1455;
 
 // Use Tauri HTTP plugin to bypass CORS when calling Codex API

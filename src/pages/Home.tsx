@@ -38,7 +38,7 @@ import { TaskPanel } from "@/components/chat/TaskPanel";
 import { ExecutionModeSelector } from "@/components/chat/ExecutionModeSelector";
 import { detectIntent, parseSlashCommand } from "@/lib/intents";
 import { useChatStore, Attachment } from "@/stores/chat";
-import { useSettingsStore } from "@/stores/settings";
+import { useSettingsStore, type ApiKeys, type ProviderType } from "@/stores/settings";
 import { useRobloxStore, ConnectionStatus } from "@/stores/roblox";
 import { usePluginStore } from "@/stores/plugin";
 import { useAuthStore } from "@/stores/auth";
@@ -436,6 +436,298 @@ function StatusBadge({ status, gameInfo }: { status: ConnectionStatus; gameInfo?
       )}
     </div>
   );
+}
+
+// WebMainMenu — landing / main menu for the deployed site (stud-weld.vercel.app).
+// Shown on web when no auth is configured. Lets the visitor sign in with
+// ChatGPT Plus/Pro (device-code flow) or paste an API key without ever leaving
+// the page, then falls through to the chat.
+function WebMainMenu() {
+  const {
+    isLoggingIn,
+    loginError,
+    startDeviceLogin,
+    cancelDeviceLogin,
+    deviceCode,
+    isOAuthAuthenticated,
+  } = useAuthStore();
+  const { apiKeys, selectedProvider, setApiKey, setSelectedModel } = useSettingsStore();
+
+  const [showKeyForm, setShowKeyForm] = useState(false);
+  const [keyProvider, setKeyProvider] = useState<ProviderType>(
+    selectedProvider === "codex" ? "openai" : (selectedProvider as ProviderType)
+  );
+  const [keyValue, setKeyValue] = useState("");
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [polling, setPolling] = useState(false);
+  const [keySaved, setKeySaved] = useState(false);
+
+  const handleCopyCode = async () => {
+    if (!deviceCode) return;
+    try {
+      await navigator.clipboard.writeText(deviceCode.user_code);
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2000);
+    } catch {
+      /* clipboard may be blocked; user can still select the code manually */
+    }
+  };
+
+  const handlePoll = async () => {
+    if (polling) return;
+    setPolling(true);
+    const { pollDeviceLogin } = useAuthStore.getState();
+    await pollDeviceLogin();
+    setPolling(false);
+  };
+
+  const handleSaveKey = () => {
+    if (!keyValue.trim()) return;
+    setApiKey(keyProvider as keyof ApiKeys, keyValue.trim());
+    setSelectedModel(getDefaultModel(keyProvider), keyProvider);
+    setKeyValue("");
+    setKeySaved(true);
+    setTimeout(() => setKeySaved(false), 2000);
+  };
+
+  // Once OAuth is authenticated, the parent re-renders and falls through to the
+  // chat. We still render a "you're in" state in case the render races.
+  if (isOAuthAuthenticated()) {
+    return (
+      <div className="h-screen flex flex-col bg-background">
+        <header className="flex items-center justify-between px-6 py-4 border-b border-border/50">
+          <Logo />
+          <SettingsDialog />
+        </header>
+        <main className="flex-1 flex items-center justify-center">
+          <Loader variant="circular" size="md" />
+        </main>
+      </div>
+    );
+  }
+
+  // Device-code UI replaces the main menu while a sign-in is in progress.
+  if (isLoggingIn && deviceCode) {
+    return (
+      <div className="h-screen flex flex-col bg-background">
+        <header className="flex items-center justify-between px-6 py-4 border-b border-border/50">
+          <Logo />
+          <SettingsDialog />
+        </header>
+        <main className="flex-1 flex items-center justify-center px-6">
+          <div className="w-full max-w-md space-y-4">
+            <div className="text-center space-y-2">
+              <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-[#10a37f] to-[#1a7f64] mb-2">
+                <Sparkles className="w-6 h-6 text-white" />
+              </div>
+              <h1 className="text-2xl font-heading">Sign in with ChatGPT</h1>
+              <p className="text-sm text-muted-foreground">
+                Enter this one-time code to authorise this site.
+              </p>
+            </div>
+            <div className="rounded-2xl bg-card border border-primary/20 p-5 space-y-4">
+              <p className="text-sm text-muted-foreground">
+                1. Open{" "}
+                <a
+                  href={deviceCode.verification_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary font-medium hover:underline break-all"
+                >
+                  {deviceCode.verification_url}
+                </a>{" "}
+                in any browser (or copy it).
+              </p>
+              <p className="text-sm text-muted-foreground">
+                2. Sign in to ChatGPT and enter the code below. Your account must
+                have <span className="font-medium text-foreground">"Allow device code login"</span>{" "}
+                enabled in ChatGPT settings.
+              </p>
+              <div className="flex items-center justify-center gap-3 py-2">
+                <span className="text-3xl font-mono font-bold tracking-[0.3em] select-all">
+                  {deviceCode.user_code}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCopyCode}
+                  className="shrink-0 h-9 w-9 p-0 rounded-lg"
+                  aria-label="Copy code"
+                >
+                  {copiedCode ? (
+                    <Check className="w-4 h-4 text-green-600" />
+                  ) : (
+                    <Copy className="w-4 h-4" />
+                  )}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground text-center">
+                Already entered the code? Tap continue below.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                onClick={handlePoll}
+                disabled={polling}
+                className="flex-1 rounded-xl bg-gradient-to-r from-[#10a37f] to-[#1a7f64] hover:from-[#0d8f6e] hover:to-[#166b55]"
+              >
+                {polling ? (
+                  <Loader variant="circular" size="sm" className="mr-2" />
+                ) : (
+                  <Check className="w-4 h-4 mr-2" />
+                )}
+                {polling ? "Checking…" : "I've signed in — continue"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={cancelDeviceLogin}
+                className="text-muted-foreground hover:text-foreground"
+                aria-label="Cancel"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (isLoggingIn) {
+    return (
+      <div className="h-screen flex flex-col bg-background">
+        <header className="flex items-center justify-between px-6 py-4 border-b border-border/50">
+          <Logo />
+          <SettingsDialog />
+        </header>
+        <main className="flex-1 flex flex-col items-center justify-center px-6 gap-3">
+          <Loader variant="dots" size="md" />
+          <Loader variant="text-shimmer" text="Requesting sign-in" size="sm" />
+        </main>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-screen flex flex-col bg-background">
+      <header className="flex items-center justify-between px-6 py-4 border-b border-border/50">
+        <Logo />
+        <SettingsDialog />
+      </header>
+
+      <main className="flex-1 flex items-center justify-center px-6 overflow-auto">
+        <div className="w-full max-w-lg space-y-8">
+          <div className="text-center space-y-3">
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-3xl bg-primary/10">
+              <LogoMark className="w-9 h-9" />
+            </div>
+            <h1 className="text-3xl font-heading">Stud</h1>
+            <p className="text-muted-foreground">
+              AI for Roblox Studio. Chat, plan, and edit your game.
+            </p>
+          </div>
+
+          {loginError && (
+            <p className="text-sm text-red-600 bg-red-50 border border-red-100 p-3 rounded-xl text-center">
+              {loginError}
+            </p>
+          )}
+
+          <div className="space-y-3">
+            <Button
+              onClick={startDeviceLogin}
+              className="w-full h-12 rounded-2xl bg-gradient-to-r from-[#10a37f] to-[#1a7f64] hover:from-[#0d8f6e] hover:to-[#166b55]"
+            >
+              <Sparkles className="w-5 h-5 mr-2" />
+              Sign in with ChatGPT Plus/Pro
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={() => setShowKeyForm((v) => !v)}
+              className="w-full h-12 rounded-2xl"
+            >
+              <Key className="w-5 h-5 mr-2" />
+              Use an API key
+            </Button>
+          </div>
+
+          {showKeyForm && (
+            <div className="rounded-2xl border border-border bg-card p-5 space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Pick a provider and paste your key. It stays in this browser only.
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                {(["openai", "anthropic", "openrouter", "opencode"] as ProviderType[]).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setKeyProvider(p)}
+                    className={cn(
+                      "py-2 px-3 rounded-xl text-sm font-medium border transition-colors",
+                      keyProvider === p
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background hover:bg-muted border-border"
+                    )}
+                  >
+                    {p === "openai" ? "OpenAI" : p === "anthropic" ? "Anthropic" : p === "openrouter" ? "OpenRouter" : "OpenCode Zen"}
+                  </button>
+                ))}
+              </div>
+              <Input
+                type="password"
+                placeholder={keyProvider === "opencode" ? "Optional (free models work without a key)" : "Paste your API key"}
+                value={keyValue}
+                onChange={(e) => setKeyValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSaveKey();
+                }}
+              />
+              {apiKeys[keyProvider as keyof ApiKeys] && (
+                <p className="text-xs text-green-600">
+                  A key for {keyProvider} is already saved. Saving will replace it.
+                </p>
+              )}
+              <div className="flex gap-2">
+                <Button onClick={handleSaveKey} disabled={!keyValue.trim()} className="flex-1 rounded-xl">
+                  Save and open chat
+                </Button>
+                {keySaved && (
+                  <span className="flex items-center text-sm text-green-600">
+                    <Check className="w-4 h-4 mr-1" /> Saved
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          <p className="text-xs text-muted-foreground text-center">
+            For Roblox Studio editing, install the{" "}
+            <a className="underline hover:text-foreground" href="/api/stud/plugin" target="_blank" rel="noreferrer">
+              stud-bridge plugin
+            </a>{" "}
+            and pair it with this site.
+          </p>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function getDefaultModel(provider: ProviderType): string {
+  switch (provider) {
+    case "anthropic":
+      return "claude-sonnet-4.5";
+    case "openrouter":
+      return "openai/gpt-4o-mini";
+    case "opencode":
+      return "big-pickle";
+    case "openai":
+    case "codex":
+    default:
+      return "gpt-5";
+  }
 }
 
 export function Home() {
@@ -1436,10 +1728,20 @@ export function Home() {
     </>
   );
 
-  // Show connection screen if not connected (unless workWithoutStudio is enabled).
-  const canWorkOffline = appSettings.workWithoutStudio;
-  if (!isConnected && !canWorkOffline) {
+  // On the web there is no Roblox Studio to connect to, so the connection
+  // screen is never relevant — the chat / main menu is the entry point.
+  // The desktop app still honours workWithoutStudio and falls back to the
+  // ConnectionScreen when the bridge isn't reachable.
+  const canWorkOffline = isWebMode || appSettings.workWithoutStudio;
+  if (!isWebMode && !isConnected && !canWorkOffline) {
     return <ConnectionScreen status={studioStatus} />;
+  }
+
+  // On the deployed site, show a clean main menu / landing instead of the
+  // raw empty-state chat when the user hasn't signed in yet. Once any auth
+  // (Codex OAuth or an API key) is configured, fall through to the chat.
+  if (isWebMode && !hasConfiguredProvider) {
+    return <WebMainMenu />;
   }
 
   // Empty state - show centered input (connected but no messages)
