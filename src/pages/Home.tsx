@@ -704,7 +704,7 @@ function WebMainMenu() {
 
           <p className="text-xs text-muted-foreground text-center">
             For Roblox Studio editing, install the{" "}
-            <a className="underline hover:text-foreground" href="/api/stud/plugin" target="_blank" rel="noreferrer">
+            <a className="underline hover:text-foreground" href={`/api/stud/plugin?site=${getStudioSiteId()}`} target="_blank" rel="noreferrer">
               stud-bridge plugin
             </a>{" "}
             and pair it with this site.
