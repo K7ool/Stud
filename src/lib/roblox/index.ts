@@ -1,4 +1,4 @@
-export { studioRequest, isStudioConnected, isBridgeRunning, notConnectedError, getStudioSiteId, getGameInfo, type GameInfo, cachedStudioRequest, invalidateCache } from "./client"
+export { studioRequest, isStudioConnected, isBridgeRunning, notConnectedError, getStudioSiteId, getGameInfo, isRelaySiteActive, type GameInfo, cachedStudioRequest, invalidateCache } from "./client"
 export { robloxTools } from "./tools"
 export {
   robloxGetScript,

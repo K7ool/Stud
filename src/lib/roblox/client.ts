@@ -297,6 +297,27 @@ export async function isBridgeRunning(): Promise<boolean> {
   }
 }
 
+/**
+ * Web mode only: asks the relay whether a plugin is actively polling for the
+ * given siteId. Lets the UI detect a site mismatch — a plugin connected to a
+ * different site than this browser expects — so it can prompt a re-download
+ * instead of showing a generic "not connected" error.
+ */
+export async function isRelaySiteActive(site: string): Promise<boolean> {
+  if (!isWebMode || !site) return false;
+  try {
+    const res = await fetch(
+      `${RELAY_BASE}/api/stud/site?site=${encodeURIComponent(site)}`,
+      { method: "GET", headers: { "Cache-Control": "no-store" } },
+    );
+    if (!res.ok) return false;
+    const data = (await res.json()) as { active?: boolean };
+    return data.active === true;
+  } catch {
+    return false;
+  }
+}
+
 const _cache = new Map<string, { data: unknown; expires: number }>();
 const SCRIPT_TTL = 30_000;
 const INSTANCE_TTL = 5_000;

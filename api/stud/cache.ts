@@ -121,3 +121,26 @@ export async function setResult(siteId: string, id: string, result: { status: nu
 export async function clearPendingCommand(siteId: string): Promise<void> {
   await cacheDel(`stud:cmd:${siteId}`);
 }
+
+const ACTIVE_SITE_TTL = 30;
+
+/**
+ * Records that the plugin is actively polling the relay for a given siteId.
+ * Because each plugin has its own siteId baked into its POLL_URL, the active
+ * site acts as the plugin's "identity" — it lets the web app detect when the
+ * browser's siteId no longer matches the site the plugin is connected to.
+ */
+export async function setActiveSite(siteId: string): Promise<void> {
+  await cacheSet(`stud:active:${siteId}`, Date.now(), ACTIVE_SITE_TTL);
+}
+
+/**
+ * Returns true if the plugin has polled the relay for this siteId recently.
+ * Lets the web app distinguish "no plugin at all" from "plugin connected to a
+ * different site than this browser expects."
+ */
+export async function isSiteActive(siteId: string): Promise<boolean> {
+  const t = await cacheGet<number>(`stud:active:${siteId}`);
+  if (t === null) return false;
+  return Date.now() - t < ACTIVE_SITE_TTL * 1000;
+}

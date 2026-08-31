@@ -9,7 +9,7 @@
  * (e.g. concurrent polls), the duplicate id means the response handler
  * will just discard the second result. Commands expire after 30s anyway.
  */
-import { getPendingCommand } from "./cache";
+import { getPendingCommand, setActiveSite } from "./cache";
 
 export const config = { runtime: "edge" };
 
@@ -31,6 +31,10 @@ export default async function handler(req: Request): Promise<Response> {
       status: 400, headers: { "Content-Type": "application/json" },
     }));
   }
+
+  // A successful poll means a plugin is alive and polling for this site.
+  // Record it so the web app can detect a site mismatch later.
+  setActiveSite(site);
 
   const cmd = await getPendingCommand(site);
   if (cmd) {

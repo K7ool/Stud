@@ -3,8 +3,8 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ConnectionStatus } from "@/stores/roblox";
-import { getStudioSiteId } from "@/lib/roblox/client";
-import { RefreshCw, WifiOff, Loader2, X, Download } from "lucide-react";
+import { getStudioSiteId, isRelaySiteActive } from "@/lib/roblox/client";
+import { RefreshCw, WifiOff, Loader2, X, Download, AlertTriangle } from "lucide-react";
 
 interface ConnectionPopupProps {
   open: boolean;
@@ -21,11 +21,34 @@ interface ConnectionPopupProps {
  */
 export function ConnectionPopup({ open, status, retrying, onRetry, onDismiss }: ConnectionPopupProps) {
   const [wasDisconnected, setWasDisconnected] = useState(false);
+  const [mismatch, setMismatch] = useState<boolean | null>(null);
 
   // Track transition to disconnected so we can re-pop once reconnected then lost again.
   useEffect(() => {
     if (open) setWasDisconnected(true);
     else if (status === "connected") setWasDisconnected(false);
+  }, [open, status]);
+
+  // Detect a site mismatch: the bridge is up but Studio doesn't answer. In web
+  // mode that almost always means the plugin is polling a DIFFERENT siteId than
+  // this browser (re-download the plugin to rematch). Ask the relay before
+  // showing the generic error so we can give an actionable message instead.
+  useEffect(() => {
+    let cancelled = false;
+    if (open && status === "bridge_only") {
+      setMismatch(null);
+      const site = getStudioSiteId();
+      if (site) {
+        isRelaySiteActive(site).then((active) => {
+          if (!cancelled) setMismatch(!active);
+        });
+      } else {
+        setMismatch(false);
+      }
+    }
+    return () => {
+      cancelled = true;
+    };
   }, [open, status]);
 
   const shouldShow = open && status !== "connected";
@@ -63,6 +86,21 @@ export function ConnectionPopup({ open, status, retrying, onRetry, onDismiss }: 
             </p>
           </div>
         </div>
+
+        {shouldShow && status === "bridge_only" && mismatch === true && (
+          <div className="flex items-start gap-2.5 mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+            <div className="text-xs leading-relaxed text-amber-700 dark:text-amber-300">
+              <p className="font-semibold mb-0.5">
+                Likely cause: site mismatch
+              </p>
+              <p>
+                Your plugin connects to a different site ID than this browser.
+                Re-download the plugin (below) to rematch it, then restart Studio.
+              </p>
+            </div>
+          </div>
+        )}
 
         <div className="flex items-center justify-end gap-2 mt-4 flex-wrap">
           <Button
