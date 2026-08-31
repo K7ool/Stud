@@ -63,6 +63,7 @@ export interface TaskState {
   reorder: () => Promise<void>;
   cancel: (id: string) => Promise<void>;
   retry: (id: string) => Promise<void>;
+  startTask: (id: string) => Promise<void>;
 
   // Settings
   setMode: (mode: TaskMode) => void;
@@ -78,6 +79,20 @@ export interface TaskState {
 
 const STORAGE_KEY = "stud-task-settings";
 const PERSIST_KEY = "stud-task-cache";
+
+/**
+ * Single task runner. The chat UI registers a function that knows how to
+ * actually execute a task (stream a prompt, mark the task done, etc.). The
+ * store invokes it whenever a task is started via `startTask` or the auto
+ * queue — this keeps "flip status to running" and "actually run the chat" in
+ * one place, so the Tasks panel, "continue" keywords and auto-advance all
+ * behave the same way.
+ */
+type TaskRunner = (taskId: string) => void | Promise<void>;
+let _taskRunner: TaskRunner | null = null;
+export function registerTaskRunner(fn: TaskRunner | null): void {
+  _taskRunner = fn;
+}
 
 function readSettings(): TaskQueueSettings {
   if (typeof localStorage === "undefined")
@@ -319,6 +334,36 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
   retry: async (id) => {
     const updated = await apiTaskAction(id, "retry");
     if (updated) updateLocal(set, get, updated);
+  },
+
+  // Flip a pending/paused/needs_resume task to running AND invoke the
+  // registered runner so the chat actually streams. This is the single entry
+  // point used by the Tasks panel, the "continue" chat keyword, and any
+  // future "Run now" affordance. Without this, status flips to "running" but
+  // the chat never starts — which is why the old panel button felt dead.
+  startTask: async (id) => {
+    const task = get().tasks.find((t) => t.id === id);
+    if (!task) return;
+    // Refuse to start a second concurrent task; auto-advance will pick it up.
+    if (get().isBusy() && task.status !== "running") return;
+    if (task.status === "running") {
+      // Already running — just make sure the runner is alive (idempotent).
+      if (_taskRunner) void _taskRunner(id);
+      return;
+    }
+    // Optimistically flip to running so the UI updates immediately.
+    set((s) => ({
+      tasks: s.tasks.map((t) =>
+        t.id === id ? { ...t, status: "running" as const, startedAt: t.startedAt || Date.now(), updatedAt: Date.now() } : t
+      ),
+    }));
+    writeCache(get().tasks);
+    try {
+      await apiPatchTask(id, { status: "running" });
+    } catch {
+      /* best-effort */
+    }
+    if (_taskRunner) void _taskRunner(id);
   },
 
   setMode: (mode) => {

@@ -45,7 +45,7 @@ import { useAuthStore } from "@/stores/auth";
 import { useUserAuthStore } from "@/stores/userAuth";
 import { useGameMapStore } from "@/stores/gameMap";
 import { useMemoryStore } from "@/stores/memory";
-import { useTaskStore } from "@/stores/tasks";
+import { useTaskStore, registerTaskRunner } from "@/stores/tasks";
 import { useChat } from "@/lib/ai/providers";
 import { extractMemories, generateConversationTitle } from "@/lib/ai/memory-extract";
 import { classifyComplexity, resolveMode } from "@/lib/ai/complexity";
@@ -63,7 +63,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Maximize2, Shield, User, Coins, PanelLeft, ListChecks, Brain } from "lucide-react";
-import { ArrowUp, Square, CheckCircle2, Download, FolderOpen, RefreshCw, Box, FileText, Globe, Play, ListTodo, Settings, Sparkles, Paperclip, X, Image, File, MessageSquarePlus, Trash2, Map, Lightbulb, Users, Key, Copy, Check } from "lucide-react";
+import { ArrowUp, Square, CheckCircle2, Download, FolderOpen, RefreshCw, Box, FileText, Globe, Play, ListTodo, Settings, Sparkles, Paperclip, X, Image, File, MessageSquarePlus, Trash2, Map, Lightbulb, Users, Key, Copy, Check, House, ArrowLeft } from "lucide-react";
 
 const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
 
@@ -442,7 +442,7 @@ function StatusBadge({ status, gameInfo }: { status: ConnectionStatus; gameInfo?
 // Shown on web when no auth is configured. Lets the visitor sign in with
 // ChatGPT Plus/Pro (device-code flow) or paste an API key without ever leaving
 // the page, then falls through to the chat.
-function WebMainMenu() {
+function WebMainMenu({ onClose }: { onClose?: () => void } = {}) {
   const {
     isLoggingIn,
     loginError,
@@ -497,7 +497,15 @@ function WebMainMenu() {
       <div className="h-screen flex flex-col bg-background">
         <header className="flex items-center justify-between px-6 py-4 border-b border-border/50">
           <Logo />
-          <SettingsDialog />
+          <div className="flex items-center gap-2">
+            {onClose && (
+              <Button variant="ghost" size="sm" onClick={onClose} className="gap-1.5">
+                <ArrowLeft className="w-4 h-4" />
+                Back to chat
+              </Button>
+            )}
+            <SettingsDialog />
+          </div>
         </header>
         <main className="flex-1 flex items-center justify-center">
           <Loader variant="circular" size="md" />
@@ -512,7 +520,15 @@ function WebMainMenu() {
       <div className="h-screen flex flex-col bg-background">
         <header className="flex items-center justify-between px-6 py-4 border-b border-border/50">
           <Logo />
-          <SettingsDialog />
+          <div className="flex items-center gap-2">
+            {onClose && (
+              <Button variant="ghost" size="sm" onClick={onClose} className="gap-1.5">
+                <ArrowLeft className="w-4 h-4" />
+                Back to chat
+              </Button>
+            )}
+            <SettingsDialog />
+          </div>
         </header>
         <main className="flex-1 flex items-center justify-center px-6">
           <div className="w-full max-w-md space-y-4">
@@ -599,7 +615,15 @@ function WebMainMenu() {
       <div className="h-screen flex flex-col bg-background">
         <header className="flex items-center justify-between px-6 py-4 border-b border-border/50">
           <Logo />
-          <SettingsDialog />
+          <div className="flex items-center gap-2">
+            {onClose && (
+              <Button variant="ghost" size="sm" onClick={onClose} className="gap-1.5">
+                <ArrowLeft className="w-4 h-4" />
+                Back to chat
+              </Button>
+            )}
+            <SettingsDialog />
+          </div>
         </header>
         <main className="flex-1 flex flex-col items-center justify-center px-6 gap-3">
           <Loader variant="dots" size="md" />
@@ -637,10 +661,10 @@ function WebMainMenu() {
           <div className="space-y-3">
             <Button
               onClick={startDeviceLogin}
-              className="w-full h-12 rounded-2xl bg-gradient-to-r from-[#10a37f] to-[#1a7f64] hover:from-[#0d8f6e] hover:to-[#166b55]"
+              className="w-full h-14 rounded-2xl bg-gradient-to-r from-[#10a37f] to-[#1a7f64] hover:from-[#0d8f6e] hover:to-[#166b55]"
             >
-              <Sparkles className="w-5 h-5 mr-2" />
-              Sign in with ChatGPT Plus/Pro
+              <Play className="w-5 h-5 mr-2 fill-current" />
+              Start with ChatGPT Plus/Pro
             </Button>
 
             <Button
@@ -794,6 +818,7 @@ export function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
+  const [mainMenuOpen, setMainMenuOpen] = useState(false);
 
   const rootFeature = useGameMapStore((s) => s.rootFeature);
   const setRootFeature = useGameMapStore((s) => s.setRootFeature);
@@ -816,6 +841,18 @@ export function Home() {
   const activeTaskCount = useTaskStore(
     (s) => s.tasks.filter((t) => t.status === "running" || t.status === "pending" || t.status === "paused").length
   );
+  // Next task we can start right now (pending/needs_resume/paused), with
+  // nothing currently running. The header "Start" button and the empty-state
+  // banner both use this so the user can kick the queue without opening it.
+  const nextStartableTask = useTaskStore((s) => {
+    if (s.tasks.some((t) => t.status === "running")) return null;
+    return (
+      s.tasks.find((t) => t.status === "needs_resume") ||
+      s.tasks.find((t) => t.status === "pending") ||
+      s.tasks.find((t) => t.status === "paused") ||
+      null
+    );
+  });
 
   // Keyboard shortcuts
   useAppShortcuts({
@@ -1107,9 +1144,11 @@ export function Home() {
       const needsResume = ts.tasks.find((t) => t.status === "needs_resume");
       const target = paused || needsResume;
       if (target) {
-        ts.setStatus(target.id, "running"); // promote pending/paused/needs_resume -> running
         addMessage({ role: "user", content: userMessage });
         addMessage({ role: "assistant", content: `Starting **${target.title || "the task"}**. I'll run it now.` });
+        // startTask actually invokes the runner so the chat streams. setStatus
+        // alone used to leave tasks stuck in "running" with no execution.
+        void ts.startTask(target.id);
         return;
       }
     }
@@ -1648,6 +1687,22 @@ export function Home() {
 
   runTaskPromptRef.current = runTaskPrompt;
 
+  // Register the task runner with the store so panel buttons, the "continue"
+  // chat keyword, and any other "start this task" entry point actually stream
+  // the chat. Without this, flipping status to "running" is a no-op and the
+  // task sits there forever.
+  useEffect(() => {
+    registerTaskRunner((taskId) => {
+      const t = useTaskStore.getState().tasks.find((x) => x.id === taskId);
+      if (!t) return;
+      // If the chat is already streaming something else, skip — the running
+      // task will be re-promoted on completion.
+      if (useChatStore.getState().isStreaming) return;
+      void runTaskPromptRef.current(t.prompt || t.title, taskId);
+    });
+    return () => registerTaskRunner(null);
+  }, []);
+
 
 
   const handleSuggestionClick = (suggestion: string) => {
@@ -1756,9 +1811,11 @@ export function Home() {
 
   // On the deployed site, show a clean main menu / landing instead of the
   // raw empty-state chat when the user hasn't signed in yet. Once any auth
-  // (Codex OAuth or an API key) is configured, fall through to the chat.
-  if (isWebMode && !hasConfiguredProvider) {
-    return <WebMainMenu />;
+  // (Codex OAuth or an API key) is configured, fall through to the chat —
+  // unless the user explicitly opened the menu via the header "Main menu"
+  // button, in which case we always show it.
+  if ((isWebMode && !hasConfiguredProvider) || mainMenuOpen) {
+    return <WebMainMenu onClose={() => setMainMenuOpen(false)} />;
   }
 
   // Empty state - show centered input (connected but no messages)
@@ -1923,6 +1980,23 @@ export function Home() {
                 </span>
               )}
             </Button>
+
+            {/* Start next task. Visible whenever there's a pending or
+                needs_resume task and nothing is already running. Clicking it
+                runs startTask, which actually streams the chat (the runner
+                is registered by Home on mount). */}
+            {nextStartableTask && (
+              <Button
+                variant="default"
+                size="sm"
+                className="h-8 gap-1.5"
+                onClick={() => useTaskStore.getState().startTask(nextStartableTask.id)}
+                title={`Start: ${nextStartableTask.title || "next task"}`}
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                Start
+              </Button>
+            )}
 
             <Button
               variant="ghost"
@@ -2163,6 +2237,29 @@ export function Home() {
               </PromptInput>
             </div>
 
+            {/* Pending task call-to-action: when the queue has a task that
+                isn't running yet, surface a big "Start" button so the user
+                doesn't have to open the Tasks panel. */}
+            {nextStartableTask && (
+              <div className="w-full max-w-2xl mx-auto mb-4 rounded-2xl border border-primary/20 bg-primary/5 p-4 flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs uppercase tracking-wider text-primary/80 font-semibold">
+                    {nextStartableTask.status === "needs_resume" ? "Resume" : "Queued task"}
+                  </p>
+                  <p className="text-sm font-medium truncate">
+                    {nextStartableTask.title || nextStartableTask.prompt || "Untitled task"}
+                  </p>
+                </div>
+                <Button
+                  className="rounded-xl gap-1.5"
+                  onClick={() => useTaskStore.getState().startTask(nextStartableTask.id)}
+                >
+                  <Play className="w-4 h-4 fill-current" />
+                  Start
+                </Button>
+              </div>
+            )}
+
             {/* Suggestions */}
             <div className="flex flex-wrap justify-center gap-2">
               {displayedSuggestions.map((suggestion) => (
@@ -2329,6 +2426,19 @@ export function Home() {
         <div className="flex items-center gap-2">
           <StatusBadge status={studioStatus} gameInfo={gameInfo} />
           <div className="h-4 w-px bg-border mx-1" />
+          {/* Main menu — return to the landing/start screen. The chat state
+              stays in the store, so dismissing the menu brings you back to
+              exactly where you were. */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setMainMenuOpen(true)}
+            title="Main menu"
+            aria-label="Open main menu"
+          >
+            <House className="w-4 h-4" />
+          </Button>
           {/* Folder Picker */}
           <Button
             variant="ghost"
@@ -2380,6 +2490,23 @@ export function Home() {
           )}
 
           <div className="h-4 w-px bg-border mx-1" />
+          {/* Start next task. Visible whenever there's a pending or
+              needs_resume task and nothing is already running. Clicking it
+              runs startTask, which actually streams the chat (the runner is
+              registered by Home on mount). */}
+          {nextStartableTask && (
+            <Button
+              variant="default"
+              size="sm"
+              className="h-8 gap-1.5"
+              onClick={() => useTaskStore.getState().startTask(nextStartableTask.id)}
+              title={`Start: ${nextStartableTask.title || "next task"}`}
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+              Start
+            </Button>
+          )}
+
           <Button
             variant="ghost"
             size="icon"

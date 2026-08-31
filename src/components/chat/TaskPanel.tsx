@@ -229,6 +229,7 @@ export function TaskPanel({ open, onClose }: TaskPanelProps) {
   const reorder = useTaskStore((s) => s.reorder);
   const patch = useTaskStore((s) => s.patch);
   const setStatus = useTaskStore((s) => s.setStatus);
+  const startTask = useTaskStore((s) => s.startTask);
 
   const [tab, setTab] = useState<"active" | "queue" | "history">("active");
 
@@ -311,7 +312,7 @@ export function TaskPanel({ open, onClose }: TaskPanelProps) {
               <span className="font-medium">{needsResume.title}</span> was running when the page closed.
             </p>
             <div className="flex gap-2">
-              <Button size="sm" className="h-7" onClick={() => setStatus(needsResume.id, "running")}>
+              <Button size="sm" className="h-7" onClick={() => startTask(needsResume.id)}>
                 Resume
               </Button>
               <Button size="sm" variant="ghost" className="h-7" onClick={() => cancel(needsResume.id)}>
@@ -335,7 +336,7 @@ export function TaskPanel({ open, onClose }: TaskPanelProps) {
                   active
                   onCancel={() => cancel(running.id)}
                   onRetry={() => retry(running.id)}
-                  onStart={() => setStatus(running.id, "running")}
+                  onStart={() => startTask(running.id)}
                   onPriority={(p) => patch(running.id, { priority: p })}
                   canMoveUp={false}
                   canMoveDown={false}
@@ -360,7 +361,7 @@ export function TaskPanel({ open, onClose }: TaskPanelProps) {
                   active
                   onCancel={() => cancel(currentTask.id)}
                   onRetry={() => retry(currentTask.id)}
-                  onStart={() => setStatus(currentTask.id, "running")}
+                  onStart={() => startTask(currentTask.id)}
                   onPriority={(p) => patch(currentTask.id, { priority: p })}
                   canMoveUp={false}
                   canMoveDown={false}
@@ -398,7 +399,7 @@ export function TaskPanel({ open, onClose }: TaskPanelProps) {
                   active={false}
                   onCancel={() => cancel(t.id)}
                   onRetry={() => retry(t.id)}
-                  onStart={() => setStatus(t.id, "running")}
+                  onStart={() => startTask(t.id)}
                   onPriority={(p) => patch(t.id, { priority: p })}
                   canMoveUp={i > 0}
                   canMoveDown={i < queue.length - 1}
