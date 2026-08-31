@@ -313,6 +313,10 @@ export async function chat(options: ChatOptions) {
     const providerInstance = getProvider(provider, apiKey);
 
     console.log("[Chat] Created provider instance, starting stream...");
+    const openaiOpts = (providerOptions as { openai?: { reasoningEffort?: string } } | undefined)?.openai;
+    const anthropicOpts = (providerOptions as { anthropic?: { thinking?: { type?: string } } } | undefined)?.anthropic;
+    const aiEffort = openaiOpts?.reasoningEffort ?? (anthropicOpts?.thinking?.type === "enabled" ? "thinking" : "auto");
+    console.log(`[AI] provider=${provider} model=${model} effort=${aiEffort}`);
 
     // Cap retries for the controlled loop below. Billing/auth must be 0.
     const RETRY_LIMIT = 2;
@@ -322,6 +326,8 @@ export async function chat(options: ChatOptions) {
     let lastError: unknown = null;
     let fullText = "";
     let gotOutput = false;
+    let gotToolCall = false;
+    let reportedError = false;
 
     while (attempt <= RETRY_LIMIT) {
       if (attempt > 0) {
@@ -330,6 +336,7 @@ export async function chat(options: ChatOptions) {
       attempt++;
       fullText = "";
       gotOutput = false;
+      gotToolCall = false;
 
       try {
         const result = streamText({
@@ -357,6 +364,7 @@ export async function chat(options: ChatOptions) {
               break;
 
             case "tool-call":
+              gotToolCall = true;
               console.log("[Chat] Tool call:", event.toolName);
               onToolCall?.({
                 id: event.toolCallId,
@@ -385,6 +393,19 @@ export async function chat(options: ChatOptions) {
         }
 
         console.log("[Chat] Stream complete, text length:", fullText.length);
+
+        // A stream that finished with no text and no tool call is not a real
+        // completion (e.g. a silent provider hiccup). Surface it as a failure
+        // instead of reporting an empty success.
+        if (fullText.length === 0 && !gotToolCall) {
+          const emptyErr = new AIChatError(
+            new Error("The AI provider returned an empty response. Please try again.")
+          );
+          onError?.(emptyErr);
+          reportedError = true;
+          throw emptyErr;
+        }
+
         onFinish?.(fullText);
         return fullText;
       } catch (error) {
@@ -393,20 +414,26 @@ export async function chat(options: ChatOptions) {
         // streamed yet (avoid duplicating a partial assistant response).
         const c = classifyProviderError(error);
         console.error(`[Chat] Attempt ${attempt} failed (${c.code}/${c.retryClass}):`, error);
-        if (c.retryClass !== "RETRYABLE" || gotOutput || attempt > RETRY_LIMIT) {
+        if (c.retryClass !== "RETRYABLE" || gotOutput || attempt > RETRY_LIMIT || reportedError) {
           break;
         }
       }
     }
 
-    // Non-retryable (or exhausted retries): wrap with friendly + code info.
-    const err = lastError instanceof Error ? new AIChatError(lastError) : new Error(String(lastError));
-    onError?.(err);
+    // Non-retryable (or exhausted retries): wrap with friendly + code info and
+    // report exactly once (skip a second onError if the empty-response case
+    // already reported).
+    const err = lastError instanceof AIChatError ? lastError : new AIChatError(lastError);
+    if (!reportedError) {
+      onError?.(err);
+    }
     throw err;
   } catch (error) {
     console.error("[Chat] Error:", error);
     const err = error instanceof AIChatError ? error : new AIChatError(error);
-    onError?.(err);
+    if (!reportedError) {
+      onError?.(err);
+    }
     throw err;
   }
 }
@@ -450,31 +477,32 @@ export function useChat() {
       return chat({ model, provider, apiKey, messages, ...callbacks });
     }
 
-    // Check if using Codex (either via authMethod=oauth or selectedProvider=codex)
-    const useCodex =
-      (authMethod === "oauth" && isOAuthAuthenticated()) || selectedProvider === "codex";
-
-    if (useCodex && isOAuthAuthenticated()) {
-      // Use Codex with OAuth
-      console.log("[useChat] Using Codex with OAuth");
-      provider = "codex";
-      apiKey = "codex-oauth"; // Dummy, actual auth handled in codexFetch
-      model = selectedModel;
-    } else if (useCodex && !isOAuthAuthenticated()) {
-      // Codex selected but not authenticated - try OpenAI API key
-      console.log("[useChat] Codex selected but not OAuth authenticated, trying OpenAI API key");
-      const openaiKey = getApiKey("openai");
-      if (openaiKey) {
-        provider = "openai";
-        apiKey = openaiKey;
+    // Only route to Codex OAuth when the user has explicitly selected the
+    // "codex" provider AND is authenticated. A selected provider of "openai"
+    // must always stay on the OpenAI API key (no silent provider swap), even
+    // if a Codex OAuth session happens to exist.
+    if (selectedProvider === "codex") {
+      if (isOAuthAuthenticated()) {
+        console.log("[useChat] Using Codex with OAuth");
+        provider = "codex";
+        apiKey = "codex-oauth"; // Dummy, actual auth handled in codexFetch
         model = selectedModel;
       } else {
-        throw new Error("Please sign in with ChatGPT Plus/Pro or add an OpenAI API key in settings");
+        // Codex selected but not authenticated - try OpenAI API key
+        console.log("[useChat] Codex selected but not OAuth authenticated, trying OpenAI API key");
+        const openaiKey = getApiKey("openai");
+        if (openaiKey) {
+          provider = "openai";
+          apiKey = openaiKey;
+          model = selectedModel;
+        } else {
+          throw new Error("Please sign in with ChatGPT Plus/Pro or add an OpenAI API key in settings");
+        }
       }
     } else {
-      // Use API key
-      provider = selectedProvider === "codex" ? "openai" : selectedProvider;
-      const key = getApiKey(provider as "openai" | "anthropic");
+      // Use the explicitly selected provider's API key.
+      provider = selectedProvider;
+      const key = getApiKey(provider as "openai" | "anthropic" | "openrouter" | "opencode");
 
       if (!key) {
         throw new Error(`No API key configured for ${provider}. Please add one in settings or sign in with ChatGPT Plus/Pro.`);

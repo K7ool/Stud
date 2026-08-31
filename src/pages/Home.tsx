@@ -866,12 +866,14 @@ export function Home() {
         ? `Relevant memory (use only if it improves your answer; do not mention unless asked):\n${memoryLines}`
         : undefined;
 
-      // Map the user's effort setting to actual provider parameters.
+      // Map the user's effort setting to actual provider parameters. Instant
+      // mode disables hidden reasoning (effort "none"); otherwise use the
+      // user's explicit thinking effort.
       const settings = useSettingsStore.getState();
       const providerOptions = buildProviderOptions(
         settings.selectedProvider,
         settings.selectedModel,
-        taskSettings.effort
+        taskSettings.mode === "instant" ? "none" : taskSettings.effort
       );
 
       const chatMessages = [
@@ -1184,7 +1186,7 @@ export function Home() {
       const providerOptions = buildProviderOptions(
         settings.selectedProvider,
         settings.selectedModel,
-        taskSettings.effort
+        taskSettings.mode === "instant" ? "none" : taskSettings.effort
       );
 
       const chatMessages = [

@@ -21,7 +21,7 @@
 
 import type { ProviderType } from "./providers";
 
-export type EffortLevel = "low" | "medium" | "high" | "auto";
+export type EffortLevel = "none" | "low" | "medium" | "high" | "auto";
 
 /** Models that accept OpenAI-style `reasoning_effort`. */
 const OPENAI_REASONING_FAMILIES = [
@@ -48,9 +48,9 @@ function isReasoningCapable(modelId: string): boolean {
   return false;
 }
 
-/** Convert a normalized effort to "low" | "medium" | "high" (never "auto"). */
-function normalize(effort: EffortLevel): "low" | "medium" | "high" | null {
-  if (effort === "low" || effort === "medium" || effort === "high") return effort;
+/** Convert a normalized effort to a provider value (never "auto"). */
+function normalize(effort: EffortLevel): "none" | "low" | "medium" | "high" | null {
+  if (effort === "none" || effort === "low" || effort === "medium" || effort === "high") return effort;
   return null;
 }
 
@@ -77,7 +77,8 @@ export function buildProviderOptions(
     // For codex, shaping is not possible from the client (custom protocol).
     if (provider === "codex") return {};
     // For openai and openrouter, only send reasoning_effort for reasoning-capable
-    // models — otherwise the request would be rejected.
+    // models — otherwise the request would be rejected. "none" (Instant mode)
+    // is passed through so the API disables hidden reasoning.
     if (!isReasoningCapable(modelId)) return {};
     return {
       openai: {
@@ -87,6 +88,8 @@ export function buildProviderOptions(
   }
 
   if (provider === "anthropic") {
+    // "none" (Instant mode) means no extended thinking.
+    if (level === "none") return {};
     return {
       anthropic: {
         thinking: { type: "enabled", budgetTokens: ANTHROPIC_BUDGET[level] },
