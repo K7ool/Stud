@@ -234,7 +234,7 @@ export function ModelSelector({ className, disabled }: ModelSelectorProps) {
                   key={model.id}
                   model={model}
                   isSelected={selectedModel === model.id}
-                  onClick={() => handleSelect(model.id, "codex")}
+                  onClick={() => handleSelect(model.id, model.provider)}
                 />
               ))}
             </ModelGroup>
