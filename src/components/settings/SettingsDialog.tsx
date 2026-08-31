@@ -353,7 +353,7 @@ function ChatGPTAuth() {
 }
 
 // Auth method tabs
-type TabType = "chatgpt" | "apikeys" | "openrouter";
+type TabType = "chatgpt" | "apikeys" | "openrouter" | "opencode";
 
 function useAuthTabs() {
   const { isOAuthAuthenticated } = useAuthStore();
@@ -361,12 +361,16 @@ function useAuthTabs() {
   const [activeTab, setActiveTab] = useState<TabType>("chatgpt");
 
   const isOAuth = isOAuthAuthenticated();
-  const hasAnyKey = hasApiKey("openai") || hasApiKey("anthropic") || hasApiKey("openrouter");
+  const hasAnyKey =
+    hasApiKey("openai") || hasApiKey("anthropic") || hasApiKey("openrouter") || hasApiKey("opencode");
 
   const handleTabChange = (tab: TabType) => {
     setActiveTab(tab);
     if (tab === "openrouter") {
       setSelectedModel("google/gemini-2.0-flash-thinking-exp:free", "openrouter");
+    }
+    if (tab === "opencode") {
+      setSelectedModel("opencode/big-pickle", "opencode");
     }
   };
 
@@ -418,6 +422,19 @@ function AuthMethodTabs({ activeTab, onTabChange, isOAuth, hasAnyKey }: {
       >
         <Globe className="w-4 h-4" />
         Free
+        {hasAnyKey && <span className="w-2 h-2 rounded-full bg-green-500" />}
+      </button>
+      <button
+        onClick={() => onTabChange("opencode")}
+        className={cn(
+          "flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-sm font-medium transition-all",
+          activeTab === "opencode"
+            ? "bg-background shadow-sm text-foreground"
+            : "text-muted-foreground hover:text-foreground"
+        )}
+      >
+        <Sparkles className="w-4 h-4" />
+        Zen
         {hasAnyKey && <span className="w-2 h-2 rounded-full bg-green-500" />}
       </button>
     </div>
@@ -532,6 +549,107 @@ function OpenRouterSection() {
   );
 }
 
+// OpenCode Zen Free Models component
+function OpenCodeSection() {
+  const { apiKeys, setApiKey, selectedModel, selectedProvider, setSelectedModel } = useSettingsStore();
+  const [isLoading, setIsLoading] = useState(false);
+  const [models, setModels] = useState<Array<{ id: string; name: string }>>([]);
+  const [showKey, setShowKey] = useState(false);
+
+  const fetchModels = async () => {
+    setIsLoading(true);
+    try {
+      const { fetchOpenCodeModels } = await import("@/lib/models/opencode");
+      const fetchedModels = await fetchOpenCodeModels(apiKeys.opencode);
+      setModels(fetchedModels.map(m => ({ id: m.id, name: m.name })));
+    } catch (error) {
+      console.error("Failed to fetch OpenCode models:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchModels();
+  }, []);
+
+  const currentModel = selectedProvider === "opencode" && selectedModel ? selectedModel : "opencode/big-pickle";
+  const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setSelectedModel(e.target.value, "opencode");
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-gradient-to-r from-emerald-500/10 to-teal-500/10 rounded-xl p-4 border border-emerald-500/20">
+        <div className="flex items-center gap-2 mb-2">
+          <ProviderIcon id="opencode" size="sm" />
+          <span className="font-medium">OpenCode Zen</span>
+        </div>
+        <p className="text-xs text-muted-foreground mb-3">
+          Free models like Big Pickle hosted on the OpenCode Zen gateway. No API key required for free models.
+        </p>
+
+        <div className="space-y-3">
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Input
+                type={showKey ? "text" : "password"}
+                value={apiKeys.opencode || ""}
+                onChange={(e) => setApiKey("opencode", e.target.value)}
+                placeholder="Optional key (free models work without one)"
+                className="pr-10 rounded-xl"
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey(!showKey)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <Icon name={showKey ? "eye-off" : "eye"} size="sm" />
+              </button>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={fetchModels}
+              disabled={isLoading}
+              className="rounded-xl"
+            >
+              {isLoading ? <Loader variant="circular" size="sm" /> : <RefreshCw className="w-4 h-4" />}
+            </Button>
+          </div>
+
+          {models.length > 0 && (
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Select Model</label>
+              <select
+                value={currentModel}
+                onChange={handleModelChange}
+                className="w-full h-9 px-3 rounded-xl border border-input bg-background text-sm"
+              >
+                {models.map(m => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <p className="text-xs text-muted-foreground">
+            Get an optional free key from{" "}
+            <a
+              href="https://opencode.ai/zen"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline"
+            >
+              opencode.ai/zen
+            </a>
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface SettingsDialogProps {
   children?: React.ReactNode;
 }
@@ -570,6 +688,8 @@ export function SettingsDialog({ children }: SettingsDialogProps) {
               <ChatGPTAuth />
             ) : activeTab === "openrouter" ? (
               <OpenRouterSection />
+            ) : activeTab === "opencode" ? (
+              <OpenCodeSection />
             ) : (
               <>
                 <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">

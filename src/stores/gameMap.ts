@@ -440,6 +440,8 @@ export const useGameMapStore = create<GameMapState & GameMapRichState>()(  persi
             ? settings.getApiKey("anthropic")
             : provider === "openrouter"
             ? settings.getApiKey("openrouter")
+            : provider === "opencode"
+            ? settings.getApiKey("opencode")
             : undefined;
 
         // If codex is selected but no OAuth token, fall back to OpenAI key

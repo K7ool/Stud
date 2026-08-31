@@ -5,9 +5,10 @@ export interface ApiKeys {
   openai?: string;
   anthropic?: string;
   openrouter?: string;
+  opencode?: string;
 }
 
-export type ProviderType = "openai" | "anthropic" | "codex" | "openrouter";
+export type ProviderType = "openai" | "anthropic" | "codex" | "openrouter" | "opencode";
 
 export interface AppSettings {
   // UI Settings

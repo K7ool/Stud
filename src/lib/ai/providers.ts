@@ -8,9 +8,10 @@ import { isAuthenticated as isCodexAuthenticated } from "@/lib/auth/codex";
 import { codexChat } from "./codex-chat";
 import { AIChatError, classifyProviderError } from "./errors";
 
-export type ProviderType = "openai" | "anthropic" | "codex" | "openrouter";
+export type ProviderType = "openai" | "anthropic" | "codex" | "openrouter" | "opencode";
 
 const OPENROUTER_API_BASE = "https://openrouter.ai/api/v1";
+const OPENCODE_ZEN_API_BASE = "https://opencode.ai/zen/v1";
 
 export function getProvider(type: ProviderType, apiKey: string) {
   switch (type) {
@@ -24,6 +25,13 @@ export function getProvider(type: ProviderType, apiKey: string) {
       return createOpenAI({
         apiKey,
         baseURL: OPENROUTER_API_BASE,
+      });
+    case "opencode":
+      // OpenCode Zen is OpenAI-compatible; free models (Big Pickle, etc.) accept
+      // anonymous requests, so an empty key is tolerated.
+      return createOpenAI({
+        apiKey: apiKey || "anonymous",
+        baseURL: OPENCODE_ZEN_API_BASE,
       });
     default:
       throw new Error(`Unknown provider: ${type}`);
@@ -433,6 +441,15 @@ export function useChat() {
       return chat({ model, provider, apiKey, messages, ...callbacks });
     }
 
+    // OpenCode Zen free models (Big Pickle, etc.) work without a key.
+    if (selectedProvider === "opencode") {
+      console.log("[useChat] Using OpenCode Zen");
+      provider = "opencode";
+      apiKey = getApiKey("opencode") || "";
+      model = selectedModel;
+      return chat({ model, provider, apiKey, messages, ...callbacks });
+    }
+
     // Check if using Codex (either via authMethod=oauth or selectedProvider=codex)
     const useCodex =
       (authMethod === "oauth" && isOAuthAuthenticated()) || selectedProvider === "codex";
@@ -482,8 +499,10 @@ export function useChat() {
 
 // Check if any auth is configured
 export function hasAnyAuth(): boolean {
-  const { apiKeys } = useSettingsStore.getState();
-  const hasApiKey = !!(apiKeys.openai || apiKeys.anthropic || apiKeys.openrouter);
+  const { apiKeys, selectedProvider } = useSettingsStore.getState();
+  const hasApiKey = !!(apiKeys.openai || apiKeys.anthropic || apiKeys.openrouter || apiKeys.opencode);
   const hasOAuth = isCodexAuthenticated();
-  return hasApiKey || hasOAuth;
+  // OpenCode Zen free models work without a key.
+  const hasOpenCode = apiKeys.opencode || selectedProvider === "opencode";
+  return hasApiKey || hasOAuth || hasOpenCode;
 }

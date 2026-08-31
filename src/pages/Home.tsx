@@ -492,7 +492,7 @@ export function Home() {
   const { appSettings } = useSettingsStore();
 
   const messages = getCurrentMessages();
-  const { hasApiKey } = useSettingsStore();
+  const { hasApiKey, selectedProvider } = useSettingsStore();
   // Granular subscriptions so Home only re-renders when these specific values
   // change, not on every 2-second poll (lastSuccessfulPoll/lastCheck mutate
   // each poll and would otherwise re-render the whole component constantly).
@@ -662,7 +662,7 @@ export function Home() {
     return () => document.removeEventListener("click", handleClickOutside);
   }, []);
 
-  const hasConfiguredProvider = hasApiKey("openai") || hasApiKey("anthropic") || useAuthStore.getState().isOAuthAuthenticated();
+  const hasConfiguredProvider = hasApiKey("openai") || hasApiKey("anthropic") || hasApiKey("opencode") || selectedProvider === "opencode" || useAuthStore.getState().isOAuthAuthenticated();
   const isConnected = studioStatus === "connected";
 
   // Improve prompt handler

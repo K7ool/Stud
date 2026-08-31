@@ -23,6 +23,15 @@ const staticModels: { id: string; name: string; short: string; provider: Provide
   { id: "claude-3-5-haiku-20241022", name: "Claude Haiku", short: "Haiku", provider: "anthropic", description: "Fast" },
 ];
 
+// Free models on OpenCode Zen (openai-compatible; no API key needed)
+const opencodeModels: {
+  id: string; name: string; short: string; provider: ProviderType; description?: string; reasoning?: boolean;
+}[] = [
+  { id: "opencode/big-pickle", name: "Big Pickle", short: "Big Pickle", provider: "opencode", description: "Free flagship model", reasoning: true },
+  { id: "opencode/mimo-v2.5-free", name: "MiMo-V2.5 Free", short: "MiMo", provider: "opencode", description: "Free coding model" },
+  { id: "opencode/deepseek-v4-flash-free", name: "DeepSeek V4 Flash Free", short: "DeepSeek", provider: "opencode", description: "Free fast model" },
+];
+
 interface ModelSelectorProps {
   className?: string;
   disabled?: boolean;
@@ -63,6 +72,10 @@ export function ModelSelector({ className, disabled }: ModelSelectorProps) {
     const staticModel = staticModels.find((m) => m.id === selectedModel);
     if (staticModel) return staticModel.short;
 
+    // Check opencode models
+    const opencodeModel = opencodeModels.find((m) => m.id === selectedModel);
+    if (opencodeModel) return opencodeModel.short;
+
     return selectedModel.split("-").slice(-1)[0];
   };
 
@@ -101,6 +114,17 @@ export function ModelSelector({ className, disabled }: ModelSelectorProps) {
         provider: m.provider,
         description: m.description,
         disabled: isDisabled,
+      });
+    });
+
+    // Add OpenCode Zen free models (always available, no API key)
+    opencodeModels.forEach((m) => {
+      models.push({
+        id: m.id,
+        name: m.name,
+        provider: "opencode",
+        description: m.description,
+        reasoning: m.reasoning,
       });
     });
 
