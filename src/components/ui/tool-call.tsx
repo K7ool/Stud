@@ -42,7 +42,7 @@ export function ToolCall({
   className,
   executionResult,
 }: ToolCallProps) {
-  const [isExpanded, setIsExpanded] = React.useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
 
   const statusConfig = {
     pending: {
