@@ -130,16 +130,25 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
           consecutiveFailures: state.consecutiveFailures + 1,
         });
       } else {
-        // Bridge is up but no plugin is answering on THIS browser's siteId. Since
-        // the relay is reachable, this almost always means the installed plugin is
-        // baked for a different site than the browser currently has → report it as
-        // a mismatch so the user re-downloads, instead of a generic "disconnected".
-        set({
-          status: "mismatch",
-          lastCheck: now,
-          error: "No plugin connected to this site. The plugin may be configured for a different site ID — re-download it.",
-          consecutiveFailures: state.consecutiveFailures + 1,
-        });
+        // Bridge is up but no plugin is answering on THIS browser's siteId.
+        // If another site's plugin IS live, that's a definitive site mismatch —
+        // the installed plugin is baked for a different site. If no site is
+        // active anywhere, it's just "no plugin connected yet".
+        if (conn?.otherActiveSites && conn.otherActiveSites.length > 0) {
+          set({
+            status: "mismatch",
+            lastCheck: now,
+            error: `Your plugin is connected to a different site (${conn.otherActiveSites[0]}). Re-download the plugin for this browser's site (${site}).`,
+            consecutiveFailures: state.consecutiveFailures + 1,
+          });
+        } else {
+          set({
+            status: "bridge_only",
+            lastCheck: now,
+            error: "Bridge server running but Roblox Studio not connected",
+            consecutiveFailures: state.consecutiveFailures + 1,
+          });
+        }
       }
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : "Connection error";

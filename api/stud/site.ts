@@ -18,7 +18,7 @@
  *
  * No sensitive tokens are exposed.
  */
-import { getConnection, isConnectionAlive, CONNECTION_TIMEOUT_MS } from "./cache";
+import { getConnection, isConnectionAlive, CONNECTION_TIMEOUT_MS, getOtherActiveSites } from "./cache";
 import { PLUGIN_VERSION, MIN_PLUGIN_VERSION } from "./version";
 
 export const config = { runtime: "edge" };
@@ -55,6 +55,9 @@ export default async function handler(req: Request): Promise<Response> {
 
   const exists = await getConnection(site);
   const connected = await isConnectionAlive(site);
+  const otherActiveSites = exists
+    ? []
+    : await getOtherActiveSites(site);
 
   let outdated = false;
   let oldBackend = false;
@@ -71,6 +74,9 @@ export default async function handler(req: Request): Promise<Response> {
     site,
     connected,
     exists: !!exists,
+    // If the plugin is connected to a different site than the browser, report
+    // that so the UI can say "site mismatch" rather than a generic disconnect.
+    otherActiveSites,
     timeoutMs: CONNECTION_TIMEOUT_MS,
     serverVersion: PLUGIN_VERSION,
     minPluginVersion: MIN_PLUGIN_VERSION,

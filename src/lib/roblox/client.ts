@@ -333,6 +333,7 @@ export interface ConnectionDiagnostics {
   outdated: boolean;
   oldBackend: boolean;
   serverBase: string;
+  otherActiveSites: string[];
   session: {
     pluginVersion: string;
     baseUrl: string;
