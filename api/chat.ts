@@ -67,8 +67,20 @@ function json(data: unknown, init: ResponseInit = {}): Response {
   });
 }
 
-function bad(msg: string, code = 400) {
-  return json({ error: msg }, { status: code });
+function bad(msg: string, code = 400, allow?: string): Response {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (code === 405 && allow) headers["Allow"] = allow;
+  return new Response(
+    JSON.stringify({
+      success: false,
+      error: {
+        code: code === 405 ? "METHOD_NOT_ALLOWED" : code === 404 ? "NOT_FOUND" : code === 401 ? "UNAUTHORIZED" : "VALIDATION_ERROR",
+        message: msg,
+        retryable: false,
+      },
+    }),
+    { status: code, headers },
+  );
 }
 
 async function readJson(req: Request): Promise<unknown> {
@@ -109,7 +121,7 @@ export default async function handler(req: Request): Promise<Response> {
       const conv = await createConversation(uid, body.projectId || "default", body.id, body.title);
       return json({ conversation: conv }, { status: 201 });
     }
-    return bad("Method not allowed", 405);
+    return bad("Method not allowed", 405, "GET, POST");
   }
 
   // /api/chat/conversations/:id[ /messages]
@@ -134,7 +146,7 @@ export default async function handler(req: Request): Promise<Response> {
         await deleteConversation(uid, second);
         return json({ ok: true });
       }
-      return bad("Method not allowed", 405);
+      return bad("Method not allowed", 405, "GET, PATCH, DELETE");
     }
     if (third === "messages") {
       if (method === "GET") {
@@ -153,7 +165,7 @@ export default async function handler(req: Request): Promise<Response> {
         await appendMessages(uid, second, body.messages);
         return json({ ok: true, count: body.messages.length });
       }
-      return bad("Method not allowed", 405);
+      return bad("Method not allowed", 405, "GET, PUT, POST");
     }
   }
 
@@ -179,7 +191,7 @@ export default async function handler(req: Request): Promise<Response> {
       });
       return json({ memory: mem }, { status: 201 });
     }
-    return bad("Method not allowed", 405);
+    return bad("Method not allowed", 405, "GET, POST");
   }
 
   // /api/chat/memories/:id
@@ -200,7 +212,7 @@ export default async function handler(req: Request): Promise<Response> {
       await deleteMemory(uid, second);
       return json({ ok: true });
     }
-    return bad("Method not allowed", 405);
+    return bad("Method not allowed", 405, "PATCH, DELETE");
   }
 
   // /api/chat/tasks/reorder
@@ -209,7 +221,7 @@ export default async function handler(req: Request): Promise<Response> {
       const list = await reorderQueue(uid);
       return json({ tasks: list });
     }
-    return bad("Method not allowed", 405);
+    return bad("Method not allowed", 405, "POST");
   }
 
   // /api/chat/tasks
@@ -242,7 +254,7 @@ export default async function handler(req: Request): Promise<Response> {
       });
       return json({ task }, { status: 201 });
     }
-    return bad("Method not allowed", 405);
+    return bad("Method not allowed", 405, "GET, POST");
   }
 
   // /api/chat/tasks/active — convenience: pending+running+paused+needs_resume
@@ -251,7 +263,7 @@ export default async function handler(req: Request): Promise<Response> {
       const list = await getRunningAndQueued(uid);
       return json({ tasks: list });
     }
-    return bad("Method not allowed", 405);
+    return bad("Method not allowed", 405, "GET");
   }
 
   // /api/chat/tasks/:id[/action]
@@ -271,7 +283,7 @@ export default async function handler(req: Request): Promise<Response> {
         await deleteTask(uid, second);
         return json({ ok: true });
       }
-      return bad("Method not allowed", 405);
+      return bad("Method not allowed", 405, "GET, PATCH, DELETE");
     }
     if (method === "POST") {
       const body = (await readJson(req)) as { reason?: string } | null;
@@ -330,7 +342,7 @@ export default async function handler(req: Request): Promise<Response> {
         }
       }
     }
-    return bad("Not found", 404);
+    return bad("Method not allowed", 405, "POST");
   }
 
   return bad("Not found", 404);

@@ -6,6 +6,7 @@ import { useAuthStore } from "@/stores/auth";
 import { robloxTools } from "@/lib/roblox";
 import { isAuthenticated as isCodexAuthenticated } from "@/lib/auth/codex";
 import { codexChat } from "./codex-chat";
+import { AIChatError, classifyProviderError } from "./errors";
 
 export type ProviderType = "openai" | "anthropic" | "codex" | "openrouter";
 
@@ -297,64 +298,106 @@ export async function chat(options: ChatOptions) {
       });
     }
 
-    // For OpenAI/Anthropic, use standard AI SDK
+    // For OpenAI/Anthropic, use standard AI SDK.
+    // maxRetries: 0 disables the SDK's blanket retry so a billing/quota/auth
+    // failure surfaces immediately instead of burning 3 attempts. We run our
+    // own controlled retry below that only retries transient failures.
     const providerInstance = getProvider(provider, apiKey);
 
     console.log("[Chat] Created provider instance, starting stream...");
 
-    const result = streamText({
-      model: providerInstance(model),
-      system: systemExtension ? `${ROBLOX_SYSTEM_PROMPT}\n\n${systemExtension}` : ROBLOX_SYSTEM_PROMPT,
-      tools: robloxTools,
-      stopWhen: stepCountIs(40), // Cap at 40 steps for responsive replies
-      messages: messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
-      ...(providerOptions ? { providerOptions: providerOptions as Parameters<typeof streamText>[0]["providerOptions"] } : {}),
-    });
+    // Cap retries for the controlled loop below. Billing/auth must be 0.
+    const RETRY_LIMIT = 2;
+    const RETRY_DELAY_MS = 800;
 
+    let attempt = 0;
+    let lastError: unknown = null;
     let fullText = "";
+    let gotOutput = false;
 
-    console.log("[Chat] Consuming stream...");
+    while (attempt <= RETRY_LIMIT) {
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt));
+      }
+      attempt++;
+      fullText = "";
+      gotOutput = false;
 
-    // Use fullStream to capture all events including tool calls
-    for await (const event of result.fullStream) {
-      switch (event.type) {
-        case "text-delta":
-          fullText += event.text;
-          onToken?.(event.text);
+      try {
+        const result = streamText({
+          model: providerInstance(model),
+          system: systemExtension ? `${ROBLOX_SYSTEM_PROMPT}\n\n${systemExtension}` : ROBLOX_SYSTEM_PROMPT,
+          tools: robloxTools,
+          stopWhen: stepCountIs(40), // Cap at 40 steps for responsive replies
+          maxRetries: 0,
+          messages: messages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          ...(providerOptions ? { providerOptions: providerOptions as Parameters<typeof streamText>[0]["providerOptions"] } : {}),
+        });
+
+        console.log("[Chat] Consuming stream...");
+
+        // Use fullStream to capture all events including tool calls
+        for await (const event of result.fullStream) {
+          switch (event.type) {
+            case "text-delta":
+              fullText += event.text;
+              gotOutput = true;
+              onToken?.(event.text);
+              break;
+
+            case "tool-call":
+              console.log("[Chat] Tool call:", event.toolName);
+              onToolCall?.({
+                id: event.toolCallId,
+                name: event.toolName,
+                input: event.input as Record<string, unknown>,
+              });
+              break;
+
+            case "tool-result":
+              console.log("[Chat] Tool result for:", event.toolCallId);
+              onToolResult?.({
+                id: event.toolCallId,
+                output: event.output,
+              });
+              break;
+
+            case "error":
+              console.error("[Chat] Stream error:", event.error);
+              lastError = event.error;
+              // Surface the error event; throw to unwind into retry logic.
+              if (gotOutput) {
+                throw new AIChatError(event.error);
+              }
+              throw event.error;
+          }
+        }
+
+        console.log("[Chat] Stream complete, text length:", fullText.length);
+        onFinish?.(fullText);
+        return fullText;
+      } catch (error) {
+        lastError = error;
+        // Retry only transient failures, and only if nothing has been
+        // streamed yet (avoid duplicating a partial assistant response).
+        const c = classifyProviderError(error);
+        console.error(`[Chat] Attempt ${attempt} failed (${c.code}/${c.retryClass}):`, error);
+        if (c.retryClass !== "RETRYABLE" || gotOutput || attempt > RETRY_LIMIT) {
           break;
-
-        case "tool-call":
-          console.log("[Chat] Tool call:", event.toolName);
-          onToolCall?.({
-            id: event.toolCallId,
-            name: event.toolName,
-            input: event.input as Record<string, unknown>,
-          });
-          break;
-
-        case "tool-result":
-          console.log("[Chat] Tool result for:", event.toolCallId);
-          onToolResult?.({
-            id: event.toolCallId,
-            output: event.output,
-          });
-          break;
-
-        case "error":
-          console.error("[Chat] Stream error:", event.error);
-          break;
+        }
       }
     }
 
-    console.log("[Chat] Stream complete, text length:", fullText.length);
-    onFinish?.(fullText);
-    return fullText;
+    // Non-retryable (or exhausted retries): wrap with friendly + code info.
+    const err = lastError instanceof Error ? new AIChatError(lastError) : new Error(String(lastError));
+    onError?.(err);
+    throw err;
   } catch (error) {
     console.error("[Chat] Error:", error);
-    const err = error instanceof Error ? error : new Error(String(error));
+    const err = error instanceof AIChatError ? error : new AIChatError(error);
     onError?.(err);
     throw err;
   }

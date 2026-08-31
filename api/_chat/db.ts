@@ -440,8 +440,18 @@ export function getUserId(req: Request): string | null {
 }
 
 export function unauthorized() {
-  return new Response(JSON.stringify({ error: "Unauthorized" }), {
-    status: 401,
-    headers: { "Content-Type": "application/json" },
-  });
+  return new Response(
+    JSON.stringify({
+      success: false,
+      error: {
+        code: "UNAUTHORIZED",
+        message: "Authentication required. Provide a valid X-User-Id or ?uid=.",
+        retryable: false,
+      },
+    }),
+    {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    }
+  );
 }

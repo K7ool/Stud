@@ -181,7 +181,9 @@ export function clearAuth(): void {
 export function isAuthenticated(): boolean {
   const auth = getStoredAuth();
   const result = auth !== null && auth.refresh !== undefined;
-  console.log("[Codex] isAuthenticated check:", { hasAuth: auth !== null, hasRefresh: auth?.refresh !== undefined, result });
+  if (import.meta.env.DEV) {
+    console.log("[Codex] isAuthenticated check:", { hasAuth: auth !== null, hasRefresh: auth?.refresh !== undefined, result });
+  }
   return result;
 }
 

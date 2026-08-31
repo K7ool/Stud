@@ -100,6 +100,12 @@ export const useAuthStore = create<AuthState>()(
       },
 
       checkOAuthCallback: async () => {
+        // The local OAuth callback server only exists in the Tauri desktop
+        // app. In web mode there is no localhost:1455 listener, so polling it
+        // only produces ERR_CONNECTION_REFUSED noise — skip it entirely.
+        if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+          return false;
+        }
         // Poll the OAuth callback server for pending auth data
         try {
           const response = await fetch("http://localhost:1455/auth/poll");
@@ -126,7 +132,9 @@ export const useAuthStore = create<AuthState>()(
 
       isOAuthAuthenticated: () => {
         const result = isAuthenticated();
-        console.log("[Auth] isOAuthAuthenticated:", result);
+        if (import.meta.env.DEV) {
+          console.log("[Auth] isOAuthAuthenticated:", result);
+        }
         return result;
       },
     }),

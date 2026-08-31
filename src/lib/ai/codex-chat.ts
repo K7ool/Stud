@@ -8,6 +8,7 @@ import { getValidAccessToken, getStoredAuth } from "@/lib/auth/codex";
 import { ROBLOX_SYSTEM_PROMPT } from "./providers";
 import { robloxTools } from "@/lib/roblox";
 import { z } from "zod";
+import { AIChatError } from "./errors";
 
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 const CODEX_PROXY_ENDPOINT = "/api/codex";
@@ -402,7 +403,7 @@ export async function codexChat({
     return fullText;
   } catch (error) {
     console.error("[CodexChat] Error:", error);
-    const err = error instanceof Error ? error : new Error(String(error));
+    const err = error instanceof Error ? new AIChatError(error) : new Error(String(error));
     onError?.(err);
     throw err;
   }
