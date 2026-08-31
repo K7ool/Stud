@@ -59,9 +59,15 @@ export interface TaskState {
   startStep: (taskId: string, stepId: string) => Promise<void>;
   completeStep: (taskId: string, stepId: string, result?: string) => Promise<void>;
   failStep: (taskId: string, stepId: string, error: string) => Promise<void>;
-  setProgress: (taskId: string, progress: number, currentStep?: string) => Promise<void>;
-  reorder: () => Promise<void>;
-  cancel: (id: string) => Promise<void>;
+  blockStep: (taskId: string, stepId: string, reason?: string) => Promise<void>;
+  unblockStep: (taskId: string, stepId: string) => Promise<void>;
+  skipStep: (taskId: string, stepId: string, reason?: string) => Promise<void>;
+  cancelStep: (taskId: string, stepId: string, reason?: string) => Promise<void>;
+  setStepProgress: (taskId: string, stepId: string, p: number) => Promise<void>;
+  setStepStatus: (taskId: string, stepId: string, status: TaskStep["status"], opts?: { error?: string; result?: string; blockedReason?: string }) => Promise<void>;
+  setSteps: (taskId: string, steps: TaskStep[]) => Promise<void>;
+  _persistSteps: (taskId: string, steps: TaskStep[]) => Promise<void>;
+  reorder: () => Promise<void>;  cancel: (id: string) => Promise<void>;
   retry: (id: string) => Promise<void>;
   startTask: (id: string) => Promise<void>;
 
@@ -311,10 +317,91 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
     if (updated) updateLocal(set, get, updated);
   },
 
-  reorder: async () => {
-    const list = await apiReorderQueue();
-    set({ tasks: list });
-    writeCache(list);
+  // ---- step-level state machine ------------------------------------------
+
+  // Persist a new steps array after deriving progress/currentStep from it.
+  async _persistSteps(taskId, steps) {
+    const task = get().tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    const done = steps.filter((s) => s.status === "completed").length;
+    const current = steps.find((s) => s.status === "in_progress");
+    const progress = steps.length ? Math.min(1, done / steps.length) : 0;
+    set((s) => ({
+      tasks: s.tasks.map((t) =>
+        t.id === taskId
+          ? { ...t, steps, progress, currentStep: current?.id ?? "", updatedAt: Date.now() }
+          : t
+      ),
+    }));
+    writeCache(get().tasks);
+    const updated = await apiPatchTask(taskId, { steps, progress, currentStep: current?.id ?? "" });
+    if (updated) updateLocal(set, get, updated);
+  },
+
+  setSteps: async (taskId, steps) => {
+    await (get() as TaskState)._persistSteps(taskId, steps);
+  },
+
+  // Generic single-step status setter used by block/unblock/skip/cancel and
+  // the update_task_plan tool. Marks timestamps and error/result fields.
+  setStepStatus: async (taskId, stepId, status, opts) => {
+    const task = get().tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    const now = Date.now();
+    const steps = task.steps.map((s) => {
+      if (s.id !== stepId) return s;
+      const next: TaskStep = { ...s, status };
+      if (status === "in_progress") {
+        next.startedAt = next.startedAt ?? now;
+        next.attempts = (s.attempts ?? 0) + (s.status === "in_progress" ? 0 : 1);
+        if (status !== s.status && !next.attempts) next.attempts = 1;
+        delete next.error;
+        delete next.blockedReason;
+      }
+      if (status === "completed") {
+        next.completedAt = now;
+        next.stepProgress = 1;
+        if (opts?.result) next.result = opts.result;
+        delete next.error;
+        delete next.blockedReason;
+      }
+      if (status === "failed") {
+        next.completedAt = now;
+        if (opts?.error) next.error = opts.error;
+      }
+      if (status === "blocked") {
+        next.blockedReason = opts?.blockedReason || "Blocked";
+      }
+      if (status === "skipped" || status === "cancelled") {
+        next.completedAt = now;
+        if (status === "skipped" && opts?.result) next.result = opts.result;
+      }
+      return next;
+    });
+    await (get() as TaskState)._persistSteps(taskId, steps);
+  },
+
+  blockStep: async (taskId, stepId, reason) => {
+    await (get() as TaskState).setStepStatus(taskId, stepId, "blocked", { blockedReason: reason });
+  },
+  unblockStep: async (taskId, stepId) => {
+    await (get() as TaskState).setStepStatus(taskId, stepId, "pending");
+  },
+  skipStep: async (taskId, stepId, reason) => {
+    await (get() as TaskState).setStepStatus(taskId, stepId, "skipped", { result: reason });
+  },
+  cancelStep: async (taskId, stepId, reason) => {
+    const task = get().tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    await (get() as TaskState).setStepStatus(taskId, stepId, "cancelled", { result: reason });
+  },
+  setStepProgress: async (taskId, stepId, p) => {
+    const task = get().tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    const steps = task.steps.map((s) =>
+      s.id === stepId ? { ...s, stepProgress: Math.max(0, Math.min(1, p)) } : s
+    );
+    await (get() as TaskState)._persistSteps(taskId, steps);
   },
 
   cancel: async (id) => {

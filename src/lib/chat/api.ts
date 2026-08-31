@@ -334,7 +334,11 @@ export type StepStatus =
   | "in_progress"
   | "completed"
   | "failed"
-  | "skipped";
+  | "skipped"
+  | "blocked"
+  | "cancelled";
+
+export type StepPriority = "high" | "normal" | "low";
 
 export interface TaskStep {
   id: string;
@@ -342,8 +346,15 @@ export interface TaskStep {
   status: StepStatus;
   order: number;
   dependsOn: string[];
+  priority?: StepPriority;
+  /** Number of execution attempts so far (increments on retry). */
+  attempts?: number;
+  /** Live progress for this step, 0..1 (e.g. streaming a long build). */
+  stepProgress?: number;
   startedAt?: number;
   completedAt?: number;
+  /** Human-readable reason the step is currently blocked, if any. */
+  blockedReason?: string;
   error?: string;
   result?: string;
 }

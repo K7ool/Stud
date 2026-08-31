@@ -255,7 +255,11 @@ export type StepStatus =
   | "in_progress"
   | "completed"
   | "failed"
-  | "skipped";
+  | "skipped"
+  | "blocked"
+  | "cancelled";
+
+export type StepPriority = "high" | "normal" | "low";
 
 export interface TaskStep {
   id: string;
@@ -263,8 +267,12 @@ export interface TaskStep {
   status: StepStatus;
   order: number;
   dependsOn: string[]; // step ids
+  priority?: StepPriority;
+  attempts?: number;
+  stepProgress?: number;
   startedAt?: number;
   completedAt?: number;
+  blockedReason?: string;
   error?: string;
   result?: string; // short summary, e.g. "Created PetService ModuleScript"
 }
