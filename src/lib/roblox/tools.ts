@@ -1848,9 +1848,24 @@ interface PlanStepInput {
 /** Resolve the task the agent is currently driving. */
 function activePlanTask() {
   const ts = useTaskStore.getState();
+  // 1. Explicit active task set by the submit flow.
   const id = ts.activeTaskId ?? ts.currentTask()?.id ?? null;
-  if (!id) return null;
-  return ts.tasks.find((t) => t.id === id) ?? null;
+  if (id) {
+    const found = ts.tasks.find((t) => t.id === id);
+    if (found) return found;
+  }
+  // 2. Fallback: any non-terminal task (running, pending, paused, needs_resume).
+  //    This covers the case where the AI calls todowrite before the submit
+  //    flow has set activeTaskId, or after a task completes mid-stream.
+  return (
+    ts.tasks.find(
+      (t) =>
+        t.status === "running" ||
+        t.status === "pending" ||
+        t.status === "paused" ||
+        t.status === "needs_resume"
+    ) ?? null
+  );
 }
 
 function buildSteps(input: PlanStepInput[], startOrder: number): TaskStep[] {
@@ -1993,9 +2008,32 @@ const todoInputSchema = z.object({
 type TodoInput = z.infer<typeof todoInputSchema>;
 
 async function executeTodoTool(input: TodoInput) {
-  const task = activePlanTask();
-  if (!task) return { ok: false, error: "No active task to update plan for" };
+  let task = activePlanTask();
   const ts = useTaskStore.getState();
+
+  // No active task to drive. For actions that define a plan (create/replace/
+  // replan/add) we transparently create one so the todowrite tool always works,
+  // even when the submit flow didn't enqueue a task (e.g. a trivial message the
+  // AI decides to plan anyway).
+  if (!task && (input.action === "create" || input.action === "replace" || input.action === "replan" || input.action === "add")) {
+    const created = await ts.enqueue({
+      id: crypto.randomUUID(),
+      projectId: "default",
+      conversationId: "default",
+      title: input.note || "Planned work",
+      prompt: input.note || "",
+      status: "running",
+      priority: "normal",
+      mode: "plan",
+      effort: "medium",
+      createdAt: Date.now(),
+    });
+    if (!created) return { ok: false, error: "No active task to update plan for" };
+    ts.setActiveTaskId(created.id);
+    task = activePlanTask();
+  }
+
+  if (!task) return { ok: false, error: "No active task to update plan for" };
   const targetId = input.currentStep || task.steps.find((s) => s.status === "in_progress")?.id || "";
 
   switch (input.action) {

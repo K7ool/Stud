@@ -36,7 +36,6 @@ import { Sidebar } from "@/components/chat/Sidebar";
 import { MemoryDialog } from "@/components/chat/MemoryDialog";
 import { TaskPanel } from "@/components/chat/TaskPanel";
 import { TodoCard } from "@/components/chat/TodoCard";
-import { ExecutionModeSelector } from "@/components/chat/ExecutionModeSelector";
 import { detectIntent, parseSlashCommand } from "@/lib/intents";
 import { useChatStore, Attachment } from "@/stores/chat";
 import { useSettingsStore, type ApiKeys, type ProviderType } from "@/stores/settings";
@@ -2077,7 +2076,6 @@ export function Home() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <ExecutionModeSelector />
                     <ModelSelector disabled={!hasConfiguredProvider} />
 
                     {/* Improve Prompt Button */}
@@ -2657,7 +2655,6 @@ export function Home() {
                 />
               </div>
               <div className="flex items-center gap-2">
-                <ExecutionModeSelector />
                 <ModelSelector />
                 {/* Toolbox Button */}
                 <PromptInputAction tooltip="Open Toolbox (search Creator Store)">
