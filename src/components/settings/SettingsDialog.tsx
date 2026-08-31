@@ -183,11 +183,15 @@ function ChatGPTAuth() {
     isLoggingIn,
     loginError,
     startLogin,
+    startDeviceLogin,
     logout,
     cancelDeviceLogin,
     deviceCode,
     isOAuthAuthenticated,
   } = useAuthStore();
+
+  const isWebMode =
+    typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
   const { codexModels, isLoading: isLoadingModels, refreshModels, lastFetched } = useModelsStore();
 
   const [copiedCode, setCopiedCode] = useState(false);
@@ -210,8 +214,14 @@ function ChatGPTAuth() {
   };
 
   const handleStart = () => {
-    // Device-code flow (no localhost callback needed for the web).
-    startLogin();
+    // The public Codex client locks its redirect to http://localhost:1455, so on
+    // the web the normal OAuth redirect can't come back to the app. Use the
+    // device-code flow (no callback) on web, and the redirect flow on desktop.
+    if (isWebMode) {
+      startDeviceLogin();
+    } else {
+      startLogin();
+    }
   };
 
   return (
