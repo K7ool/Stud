@@ -15,9 +15,10 @@ export function ToolActivityGroup({
   groupTitle = "Tool Activity",
   className,
 }: ToolActivityGroupProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
-
+  // Early return BEFORE any hooks
   if (!toolCalls || toolCalls.length === 0) return null;
+
+  const [isExpanded, setIsExpanded] = useState(false);
 
   // Count by status
   const completed = toolCalls.filter((tc) => tc.status === "complete").length;
