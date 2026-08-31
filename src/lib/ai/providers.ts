@@ -282,7 +282,19 @@ export async function chat(options: ChatOptions) {
     // Use Codex chat for ChatGPT Plus/Pro (bypasses CORS via Tauri HTTP plugin)
     if (provider === "codex") {
       console.log("[Chat] Using Codex chat for ChatGPT Plus/Pro");
-      return codexChat(model, messages, { onToken, onToolCall, onToolResult, onFinish, onError, systemExtension });
+      return codexChat({
+        model,
+        provider,
+        apiKey,
+        messages,
+        onToken,
+        onToolCall,
+        onToolResult,
+        onFinish,
+        onError,
+        systemExtension,
+        providerOptions,
+      });
     }
 
     // For OpenAI/Anthropic, use standard AI SDK

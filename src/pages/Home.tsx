@@ -62,7 +62,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Maximize2, Shield, User, Coins, PanelLeft, ListChecks } from "lucide-react";
+import { Maximize2, Shield, User, Coins, PanelLeft, ListChecks, Brain } from "lucide-react";
 import { ArrowUp, Square, CheckCircle2, Download, FolderOpen, RefreshCw, Box, FileText, Globe, Play, ListTodo, Settings, Sparkles, Paperclip, X, Image, File, MessageSquarePlus, Trash2, Map, Lightbulb, Users } from "lucide-react";
 
 const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
@@ -1429,6 +1429,8 @@ export function Home() {
         onRetry={handleRetryConnection}
         onDismiss={() => setDismissConnection(true)}
       />
+      <TaskPanel open={taskPanelOpen} onClose={() => setTaskPanelOpen(false)} />
+      <MemoryDialog open={memoryOpen} onOpenChange={setMemoryOpen} />
     </>
   );
 
@@ -1585,6 +1587,33 @@ export function Home() {
               <Map className="w-4 h-4" />
             </Button>
 
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 relative"
+              onClick={() => setTaskPanelOpen((v) => !v)}
+              title="Tasks"
+              aria-label="Open task panel"
+            >
+              <ListChecks className="w-4 h-4" />
+              {activeTaskCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 text-[9px] bg-primary text-primary-foreground rounded-full min-w-[14px] h-[14px] px-1 flex items-center justify-center">
+                  {activeTaskCount > 99 ? "99+" : activeTaskCount}
+                </span>
+              )}
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => setMemoryOpen((v) => !v)}
+              title="Memory"
+              aria-label="Open memory panel"
+            >
+              <Brain className="w-4 h-4" />
+            </Button>
+
             {/* User Account / Credits Pill */}
             <Button
               variant="outline"
@@ -1630,6 +1659,49 @@ export function Home() {
                 Build, debug, analyze, and improve your Roblox game — your AI
                 Roblox development assistant.
               </p>
+            </div>
+
+            {/* Quick panel launcher — the workspace is fully usable before
+                you send a single message. */}
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                {
+                  key: "tasks",
+                  icon: ListChecks,
+                  label: "Tasks",
+                  desc: activeTaskCount > 0 ? `${activeTaskCount} active` : "Queue & history",
+                  onClick: () => setTaskPanelOpen(true),
+                  highlight: activeTaskCount > 0,
+                },
+                {
+                  key: "memory",
+                  icon: Brain,
+                  label: "Memory",
+                  desc: "Facts Stud remembers",
+                  onClick: () => setMemoryOpen(true),
+                },
+                {
+                  key: "map",
+                  icon: Map,
+                  label: "Game Map",
+                  desc: "Blueprint your game",
+                  onClick: () => setShowGameMap(true),
+                },
+              ].map(({ key, icon: Icon, label, desc, onClick, highlight }) => (
+                <button
+                  key={key}
+                  onClick={onClick}
+                  className={cn(
+                    "group flex flex-col items-center gap-2 rounded-2xl border bg-card p-4 text-center transition-all",
+                    "hover:-translate-y-0.5 hover:shadow-lg hover:border-primary/40",
+                    highlight ? "border-primary/40 ring-1 ring-primary/20" : "border-border"
+                  )}
+                >
+                  <Icon className={cn("w-6 h-6", highlight ? "text-primary" : "text-muted-foreground group-hover:text-primary")} />
+                  <span className="text-sm font-semibold">{label}</span>
+                  <span className="text-[11px] text-muted-foreground">{desc}</span>
+                </button>
+              ))}
             </div>
 
             {/* Input */}
@@ -2396,8 +2468,6 @@ export function Home() {
         />
       )}
 
-      <MemoryDialog open={memoryOpen} onOpenChange={setMemoryOpen} />
-      <TaskPanel open={taskPanelOpen} onClose={() => setTaskPanelOpen(false)} />
     </div>
   );
 }
