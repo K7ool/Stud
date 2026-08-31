@@ -7,7 +7,7 @@
 import { tool } from "ai"
 import { z } from "zod"
 import { studioRequest, isStudioConnected, notConnectedError, cachedStudioRequest, invalidateCache } from "./client"
-import { searchToolbox, getAssetDetails, type AssetCategory } from "./toolbox"
+import { searchToolbox, deepSearchToolbox, getAssetDetails, type AssetCategory } from "./toolbox"
 import * as fileOps from "@/lib/file-ops"
 import { useTaskStore } from "@/stores/tasks"
 import {
@@ -372,6 +372,184 @@ Name matching is case-insensitive and supports partial matches.`,
   },
 })
 
+export const robloxDeepSearchScripts = tool({
+  description: `Deep search across all Luau/Lua scripts in Roblox Studio and the project workspace.
+
+Searches script source code for keywords, function names, RemoteEvent names, service references, or regex patterns.
+Use this to locate existing gameplay systems, inspect where player data is loaded, find specific remote events, or prevent duplicate logic.
+
+Examples:
+- query: "ProfileService" -> finds where data is loaded/saved
+- query: "TakeDamage" -> finds combat & health handlers
+- query: "RemoteEvent" -> finds all network remotes and listeners
+- query: "InventoryService" -> finds inventory references`,
+  inputSchema: z.object({
+    query: z.string().describe("Text or keyword to search for inside script sources"),
+    isRegex: z.boolean().optional().default(false).describe("Whether query is a regex pattern"),
+    root: z.string().optional().default("game").describe("Instance root in Studio to search within (e.g. game, game.ServerScriptService)"),
+    maxMatches: z.number().optional().default(30).describe("Max matches to return (default: 30)"),
+  }),
+  execute: async ({
+    query,
+    isRegex = false,
+    root = "game",
+    maxMatches = 30,
+  }: {
+    query: string
+    isRegex?: boolean
+    root?: string
+    maxMatches?: number
+  }) => {
+    if (!query || !query.trim()) {
+      return { error: "Query cannot be empty" }
+    }
+
+    const trimmedQuery = query.trim()
+    const matches: Array<{
+      sourceType: "studio" | "file"
+      path: string
+      className?: string
+      line: number
+      content: string
+    }> = []
+
+    // 1. Search in Studio if connected
+    if (await isStudioConnected()) {
+      const code = `
+local HttpService = game:GetService("HttpService")
+local targetRoot = ${root === "game" ? "game" : `pcall(function() return ${root} end) and ${root} or game`}
+local q = [=[${trimmedQuery.replace(/\\/g, "\\\\").replace(/\]\=\]/g, "]=] .. ']=]' .. [=[")}] =]
+local isRegex = ${isRegex ? "true" : "false"}
+local max = ${maxMatches}
+local results = {}
+local count = 0
+
+local function checkScript(inst)
+  if inst:IsA("LuaSourceContainer") then
+    local ok, src = pcall(function() return inst.Source end)
+    if ok and src and #src > 0 then
+      local lines = string.split(src, "\\n")
+      for lineNum, line in ipairs(lines) do
+        local matched = false
+        if isRegex then
+          local s, e = pcall(function() return string.match(line, q) end)
+          matched = s and e ~= nil
+        else
+          matched = string.find(string.lower(line), string.lower(q), 1, true) ~= nil
+        end
+        if matched then
+          count = count + 1
+          table.insert(results, {
+            path = inst:GetFullName(),
+            className = inst.ClassName,
+            line = lineNum,
+            content = string.sub(line, 1, 160),
+          })
+          if count >= max then return true end
+        end
+      end
+    end
+  end
+  return false
+end
+
+for _, inst in ipairs(targetRoot:GetDescendants()) do
+  if checkScript(inst) then break end
+end
+
+print(HttpService:JSONEncode(results))
+`
+      try {
+        const runRes = await studioRequest<{ output: string; error?: string }>("/code/run", { code })
+        if (runRes.success && runRes.data?.output) {
+          const rawOut = runRes.data.output.trim()
+          const jsonStart = rawOut.indexOf("[")
+          const jsonEnd = rawOut.lastIndexOf("]")
+          if (jsonStart !== -1 && jsonEnd !== -1) {
+            const parsed = JSON.parse(rawOut.substring(jsonStart, jsonEnd + 1))
+            for (const item of parsed) {
+              matches.push({
+                sourceType: "studio",
+                path: item.path,
+                className: item.className,
+                line: item.line,
+                content: item.content,
+              })
+            }
+          }
+        }
+      } catch (_e) {
+        // Studio search fallback or non-fatal
+      }
+    }
+
+    // 2. Search local project files if available
+    try {
+      const projectPath = fileOps.getProjectPath()
+      if (projectPath) {
+        const filesResult = await fileOps.listFiles("", true)
+        if (filesResult.success && filesResult.entries) {
+          const scriptFiles = filesResult.entries.filter(
+            (e) => !e.isDirectory && (e.name.endsWith(".luau") || e.name.endsWith(".lua"))
+          )
+          for (const sFile of scriptFiles) {
+            if (matches.length >= maxMatches) break
+            const readRes = await fileOps.readFile(sFile.path)
+            if (readRes.success && readRes.content) {
+              const lines = readRes.content.split("\n")
+              for (let i = 0; i < lines.length; i++) {
+                const line = lines[i]
+                let matched = false
+                if (isRegex) {
+                  try {
+                    const regex = new RegExp(trimmedQuery, "i")
+                    matched = regex.test(line)
+                  } catch {
+                    matched = line.toLowerCase().includes(trimmedQuery.toLowerCase())
+                  }
+                } else {
+                  matched = line.toLowerCase().includes(trimmedQuery.toLowerCase())
+                }
+                if (matched) {
+                  matches.push({
+                    sourceType: "file",
+                    path: sFile.path,
+                    className: sFile.name.endsWith(".client.luau")
+                      ? "LocalScript"
+                      : sFile.name.endsWith(".server.luau")
+                        ? "Script"
+                        : "ModuleScript",
+                    line: i + 1,
+                    content: line.trim().slice(0, 160),
+                  })
+                  if (matches.length >= maxMatches) break
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (_e) {
+      // Local file search error handled gracefully
+    }
+
+    if (matches.length === 0) {
+      return {
+        query: trimmedQuery,
+        matchesCount: 0,
+        message: `No script references found matching "${trimmedQuery}".`,
+        matches: [],
+      }
+    }
+
+    return {
+      query: trimmedQuery,
+      matchesCount: matches.length,
+      matches,
+    }
+  },
+})
+
 export const robloxGetSelection = tool({
   description: `Get the currently selected objects in Roblox Studio. LOW-MEDIUM latency.
 
@@ -636,6 +814,62 @@ Examples of when to search:
       count: result.assets.length,
       query,
       category,
+      results: result.assets.map((asset) => ({
+        id: asset.id,
+        name: asset.name,
+        description: asset.description?.slice(0, 120) ?? "",
+        creator: asset.creatorName,
+        thumbnailUrl: asset.thumbnailUrl,
+        askUserOption: {
+          label: asset.name,
+          value: String(asset.id),
+          imageUrl: asset.thumbnailUrl,
+          description: `by ${asset.creatorName}`,
+        },
+      })),
+    };
+  },
+});
+
+export const robloxToolboxDeepSearch = tool({
+  description: `Perform an advanced multi-variant deep search on the Roblox Creator Store.
+
+Expands search terms semantically, searches multiple keyword variants in parallel, deduplicates, and ranks assets by relevance and creator reputation.
+
+Use this for finding high-quality weapons, characters, vehicles, VFX, animations, or UI packs.`,
+  inputSchema: z.object({
+    query: z.string().describe("Natural language search query for what to find"),
+    category: z.enum(["Model", "Decal", "Audio", "Plugin", "MeshPart"]).default("Model").describe("Asset category to search in"),
+    limit: z.number().default(15).describe("Max results to return (1-30)"),
+  }),
+  execute: async ({ query, category = "Model", limit = 15 }: { query: string; category?: AssetCategory; limit?: number }) => {
+    const safeLimit = Math.max(1, Math.min(limit, 30));
+    const result = await deepSearchToolbox(query, category, safeLimit);
+
+    if (result.error) {
+      return {
+        error: result.error,
+        message: `Deep toolbox search failed: ${result.error}.`,
+        query,
+        category,
+        results: [],
+      };
+    }
+
+    if (result.assets.length === 0) {
+      return {
+        message: `No ${category.toLowerCase()}s found for deep query "${query}".`,
+        query,
+        category,
+        results: [],
+      };
+    }
+
+    return {
+      count: result.assets.length,
+      query,
+      category,
+      deep: true,
       results: result.assets.map((asset) => ({
         id: asset.id,
         name: asset.name,
@@ -1828,6 +2062,7 @@ export const robloxTools = {
   roblox_get_script: robloxGetScript,
   roblox_set_script: robloxSetScript,
   roblox_edit_script: robloxEditScript,
+  roblox_deep_search_scripts: robloxDeepSearchScripts,
 
   // Instance tools
   roblox_get_children: robloxGetChildren,
@@ -1849,6 +2084,7 @@ export const robloxTools = {
 
   // Toolbox tools
   roblox_toolbox_search: robloxToolboxSearch,
+  roblox_toolbox_deep_search: robloxToolboxDeepSearch,
   roblox_insert_asset: robloxInsertAsset,
   roblox_toolbox_get_asset: robloxToolboxGetAsset,
   roblox_toolbox_remove: robloxToolboxRemove,

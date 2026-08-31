@@ -85,10 +85,11 @@ async function webSearchToolbox(
 async function webSearchViaProxy(
   query: string,
   category: AssetCategory,
-  limit: number
+  limit: number,
+  deep = false,
 ): Promise<ToolboxSearchResult> {
   try {
-    const url = `/api/toolbox/search?q=${encodeURIComponent(query)}&type=${encodeURIComponent(category)}&limit=${limit}`;
+    const url = `/api/toolbox/search?q=${encodeURIComponent(query)}&type=${encodeURIComponent(category)}&limit=${limit}${deep ? "&deep=true" : ""}`;
     const res = await fetch(url);
     if (!res.ok) return { assets: [] };
     const data = (await res.json()) as {
@@ -508,9 +509,10 @@ function pruneCache<T>(map: Map<string | number, { at: number; value: T }>, max 
 export async function searchToolbox(
   query: string,
   category: AssetCategory = "Model",
-  limit = 10
+  limit = 10,
+  deep = false,
 ): Promise<ToolboxSearchResult> {
-  const key = `${category}\u0000${query}\u0000${limit}`;
+  const key = `${category}\u0000${query}\u0000${limit}\u0000${deep ? "deep" : "std"}`;
   const hit = searchCache.get(key);
   if (hit && Date.now() - hit.at < SEARCH_TTL) return hit.value;
 
@@ -519,7 +521,9 @@ export async function searchToolbox(
 
   const run = (async () => {
     const result = isWebMode
-      ? await webSearchToolbox(query, category, limit)
+      ? await webSearchViaProxy(query, category, limit, deep).then((res) =>
+          res.assets.length > 0 ? res : webSearchToolbox(query, category, limit)
+        )
       : await tauriSearchToolbox(query, category, limit);
     searchCache.set(key, { at: Date.now(), value: result });
     pruneCache(searchCache);
@@ -531,6 +535,14 @@ export async function searchToolbox(
   } finally {
     inflightSearch.delete(key);
   }
+}
+
+export async function deepSearchToolbox(
+  query: string,
+  category: AssetCategory = "Model",
+  limit = 15,
+): Promise<ToolboxSearchResult> {
+  return searchToolbox(query, category, limit, true);
 }
 
 export async function getAssetDetails(

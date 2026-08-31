@@ -71,6 +71,7 @@ interface RobloxSearchResult {
   creatorId?: number;
   price?: number | null;
   assetType?: string;
+  score?: number;
 }
 
 const CATEGORY_TO_ASSET_TYPE: Record<string, number> = {
@@ -83,7 +84,37 @@ const CATEGORY_TO_ASSET_TYPE: Record<string, number> = {
   Mesh: 40,
 };
 
-async function searchCreatorStore(
+const SEMANTIC_KEYWORDS: Record<string, string[]> = {
+  sword: ["sword", "blade", "melee", "katana", "weapon", "r15 sword"],
+  gun: ["gun", "firearm", "pistol", "rifle", "weapon", "blaster", "fps weapon"],
+  car: ["car", "vehicle", "automobile", "drivable car", "chassis"],
+  npc: ["npc", "enemy", "character", "ai npc", "rig", "boss"],
+  ui: ["gui", "hud", "ui", "menu", "inventory ui", "shop gui"],
+  tree: ["tree", "nature", "foliage", "forest", "low poly tree"],
+  house: ["house", "building", "structure", "mansion", "cabin"],
+  door: ["door", "animated door", "interactable door", "sliding door"],
+  pet: ["pet", "companion", "follower", "cute pet", "egg pet"],
+  armor: ["armor", "shield", "helmet", "equipment", "suit"],
+  magic: ["magic", "spell", "vfx", "particle", "magical"],
+};
+
+function expandQuery(query: string): string[] {
+  const qLower = query.toLowerCase().trim();
+  const variants = new Set<string>([query]);
+
+  for (const [key, synonyms] of Object.entries(SEMANTIC_KEYWORDS)) {
+    if (qLower.includes(key)) {
+      for (const syn of synonyms) {
+        variants.add(qLower.replace(key, syn));
+        variants.add(syn);
+      }
+    }
+  }
+
+  return Array.from(variants).slice(0, 4);
+}
+
+async function searchCreatorStoreSingle(
   keyword: string,
   category: string,
   limit: number,
@@ -102,7 +133,7 @@ async function searchCreatorStore(
   let lastStatus = 0;
   let lastError = "";
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 500 * attempt));
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 400 * attempt));
     const res = await fetch(url.toString(), { headers: ROBLOX_HEADERS });
     lastStatus = res.status;
     if (res.status === 429) {
@@ -146,11 +177,48 @@ async function searchCreatorStore(
   return { results: [], failed: true };
 }
 
+async function searchCreatorStoreDeep(
+  keyword: string,
+  category: string,
+  limit: number,
+): Promise<{ results: RobloxSearchResult[]; failed: boolean }> {
+  const queryVariants = expandQuery(keyword);
+  const searchPromises = queryVariants.map((v) => searchCreatorStoreSingle(v, category, Math.min(limit, 20)));
+  const searchOutcomes = await Promise.allSettled(searchPromises);
+
+  const seenIds = new Set<number>();
+  const combinedResults: RobloxSearchResult[] = [];
+  let anySuccess = false;
+
+  for (const outcome of searchOutcomes) {
+    if (outcome.status === "fulfilled" && !outcome.value.failed) {
+      anySuccess = true;
+      for (const res of outcome.value.results) {
+        if (!seenIds.has(res.id)) {
+          seenIds.add(res.id);
+          // Calculate simple keyword relevance score
+          const lowerName = res.name.toLowerCase();
+          const lowerKw = keyword.toLowerCase();
+          let score = 0;
+          if (lowerName.includes(lowerKw)) score += 10;
+          if (res.creatorName === "Roblox") score += 5;
+          if (res.thumbnailUrl) score += 3;
+          res.score = score;
+          combinedResults.push(res);
+        }
+      }
+    }
+  }
+
+  // Sort by score descending
+  combinedResults.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  return { results: combinedResults.slice(0, limit), failed: !anySuccess && combinedResults.length === 0 };
+}
+
 async function fetchAssetDetailsBatch(
   ids: number[]
 ): Promise<Record<number, { name: string; creatorName: string; creatorId: number; price: number | null }>> {
   const results: Record<number, { name: string; creatorName: string; creatorId: number; price: number | null }> = {};
-  // Fetch details for all IDs in parallel (rate-limited batches of 10)
   for (const batch of chunk(ids, 10)) {
     await Promise.all(
       batch.map(async (id) => {
@@ -171,7 +239,6 @@ async function fetchAssetDetailsBatch(
             price: data.PriceInRobux ?? null,
           };
         } catch {
-          // Non-critical: use minimal data
           results[id] = { name: `Asset ${id}`, creatorName: "Unknown", creatorId: 0, price: null };
         }
       })
@@ -250,6 +317,7 @@ export default async function handler(req: Request): Promise<Response> {
   const q = (url.searchParams.get("q") ?? "").trim();
   const type = url.searchParams.get("type") ?? "Model";
   const limit = parseInt(url.searchParams.get("limit") ?? "24", 10);
+  const deep = url.searchParams.get("deep") === "true";
 
   if (!q) {
     return cors(new Response(JSON.stringify({ results: [] }), {
@@ -258,7 +326,7 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   const category = CATEGORY_TO_CREATOR_STORE[type] ?? "Models";
-  const cacheKey = `stud:toolbox:${type}:${q.toLowerCase()}:${limit}`;
+  const cacheKey = `stud:toolbox:${type}:${q.toLowerCase()}:${limit}:${deep ? "deep" : "standard"}`;
 
   // Check cache
   const cached = (await kvGet(cacheKey)) as RobloxSearchResult[] | null;
@@ -268,28 +336,39 @@ export default async function handler(req: Request): Promise<Response> {
     }));
   }
 
-  // Fetch
+  // Fetch using deep multi-variant search when requested or default single search
   let results: RobloxSearchResult[] = [];
   let failed = false;
   try {
-    const searchResult = await searchCreatorStore(q, category, limit);
+    const searchResult = deep
+      ? await searchCreatorStoreDeep(q, category, limit)
+      : await searchCreatorStoreSingle(q, category, limit);
     results = searchResult.results;
     failed = searchResult.failed;
+
+    // If standard search returned 0 results, retry with deep search before falling back
+    if (!failed && results.length === 0 && !deep) {
+      const deepResult = await searchCreatorStoreDeep(q, category, limit);
+      results = deepResult.results;
+      failed = deepResult.failed;
+    }
   } catch (e) {
     console.warn(`[toolbox-search] search error:`, e);
     failed = true;
   }
 
   if (failed || results.length === 0) {
-    // Graceful fallback to pre-curated popular assets matching query
+    // Graceful fallback to pre-curated popular assets matching query tokens
     try {
       const { POPULAR_ASSETS } = await import("../../src/lib/toolbox/popular-assets");
       const lower = q.toLowerCase();
-      const matched = POPULAR_ASSETS.filter(
-        (a) =>
-          (a.category.toLowerCase() === type.toLowerCase() || type === "Model") &&
-          (a.name.toLowerCase().includes(lower) || a.description.toLowerCase().includes(lower))
-      );
+      const tokens = lower.split(/\s+/).filter(Boolean);
+      const matched = POPULAR_ASSETS.filter((a) => {
+        const catMatch = a.category.toLowerCase() === type.toLowerCase() || type === "Model";
+        if (!catMatch) return false;
+        const text = `${a.name} ${a.description} ${a.creator}`.toLowerCase();
+        return tokens.some((t) => text.includes(t)) || text.includes(lower);
+      });
       if (matched.length > 0) {
         results = matched.map((m) => ({
           id: m.id,

@@ -5,16 +5,19 @@ export async function searchToolbox(
   q: string,
   type: AssetType = "Model",
   limit = 24,
+  deep = false,
 ): Promise<ToolboxSearchResponse> {
   if (!q.trim()) return { results: [] };
   const queryLower = q.toLowerCase();
 
   const getFallbackAssets = (): ToolboxAsset[] => {
-    const matched = POPULAR_ASSETS.filter(
-      (a) =>
-        (a.category.toLowerCase() === type.toLowerCase() || (type === "Model" && a.category === "Model")) &&
-        (a.name.toLowerCase().includes(queryLower) || a.description.toLowerCase().includes(queryLower))
-    );
+    const tokens = queryLower.split(/\s+/).filter(Boolean);
+    const matched = POPULAR_ASSETS.filter((a) => {
+      const catMatch = a.category.toLowerCase() === type.toLowerCase() || (type === "Model" && a.category === "Model");
+      if (!catMatch) return false;
+      const text = `${a.name} ${a.description} ${a.creator}`.toLowerCase();
+      return tokens.some((t) => text.includes(t)) || text.includes(queryLower);
+    });
     return (matched.length > 0 ? matched : POPULAR_ASSETS.slice(0, 12)).map((m) => ({
       id: m.id,
       name: m.name,
@@ -26,7 +29,7 @@ export async function searchToolbox(
     }));
   };
 
-  const url = `/api/toolbox/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&limit=${limit}`;
+  const url = `/api/toolbox/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&limit=${limit}${deep ? "&deep=true" : ""}`;
   try {
     const res = await fetch(url);
     if (!res.ok) {

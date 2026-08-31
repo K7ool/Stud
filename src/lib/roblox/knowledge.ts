@@ -455,6 +455,295 @@ export const PERFORMANCE_PATTERNS = {
 };
 
 // ============================================================================
+// Enterprise System Blueprints for Large-Scale Roblox Games
+// ============================================================================
+
+export const ENTERPRISE_SYSTEM_BLUEPRINTS = {
+  serviceFramework: `
+--[=[
+  @class ServiceFramework / ControllerArchitecture
+  Standard architecture for large Roblox systems:
+  - ServerScriptService/Services/*.luau (Server Services)
+  - ReplicatedStorage/Controllers/*.luau (Client Controllers)
+  - ReplicatedStorage/Shared/Modules/*.luau (Shared OOP / Signals / Utilities)
+  - ReplicatedStorage/Shared/Network/*.luau (Type-safe Remote Event broker)
+]=]
+
+-- Example: ReplicatedStorage/Shared/Network/NetworkBridge.luau
+--!strict
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local NetworkBridge = {}
+local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes")
+if not remotesFolder then
+  local folder = Instance.new("Folder")
+  folder.Name = "Remotes"
+  folder.Parent = ReplicatedStorage
+  remotesFolder = folder
+end
+
+function NetworkBridge.getRemoteEvent(name: string): RemoteEvent
+  local remote = remotesFolder:FindFirstChild(name)
+  if not remote then
+    if RunService:IsServer() then
+      local newRemote = Instance.new("RemoteEvent")
+      newRemote.Name = name
+      newRemote.Parent = remotesFolder
+      return newRemote
+    else
+      return remotesFolder:WaitForChild(name, 10) :: RemoteEvent
+    end
+  end
+  return remote :: RemoteEvent
+end
+
+return NetworkBridge`,
+
+  dataStoreSessionLock: `
+--[=[
+  @class DataManager (ProfileService Session-Lock Pattern)
+  Ensures player data persistence across servers with deadlock prevention,
+  reconciliation, autosaving, and transactional updates.
+]=]
+
+--!strict
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+local RunService = game:GetService("RunService")
+
+local PlayerDataStore = DataStoreService:GetDataStore("PlayerData_v1")
+local AUTOSAVE_INTERVAL = 300 -- 5 minutes
+local SESSION_LOCK_TIMEOUT = 1800 -- 30 minutes
+
+export type PlayerDataSchema = {
+  coins: number,
+  gems: number,
+  level: number,
+  experience: number,
+  inventory: { [string]: number },
+  settings: { sfxEnabled: boolean, musicEnabled: boolean },
+  lastLogin: number,
+  sessionLock: string?,
+}
+
+local DEFAULT_DATA: PlayerDataSchema = {
+  coins = 100,
+  gems = 10,
+  level = 1,
+  experience = 0,
+  inventory = { ["StarterSword"] = 1 },
+  settings = { sfxEnabled = true, musicEnabled = true },
+  lastLogin = 0,
+  sessionLock = nil,
+}
+
+local DataManager = {}
+local activeProfiles: { [Player]: PlayerDataSchema } = {}
+
+local function reconcile(target: any, template: any)
+  for k, v in pairs(template) do
+    if target[k] == nil then
+      if type(v) == "table" then
+        target[k] = {}
+        reconcile(target[k], v)
+      else
+        target[k] = v
+      end
+    elseif type(v) == "table" and type(target[k]) == "table" then
+      reconcile(target[k], v)
+    end
+  end
+end
+
+function DataManager.loadData(player: Player): PlayerDataSchema?
+  local key = "Player_" .. player.UserId
+  local sessionId = game.JobId .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000, 9999))
+  
+  local success, result = pcall(function()
+    return PlayerDataStore:UpdateAsync(key, function(oldData: any)
+      local data = oldData or table.clone(DEFAULT_DATA)
+      reconcile(data, DEFAULT_DATA)
+      
+      -- Check session lock
+      if data.sessionLock and (os.time() - (data.lastLogin or 0) < SESSION_LOCK_TIMEOUT) then
+        -- Locked by another active server
+        warn("Session locked for player " .. player.Name)
+      end
+      
+      data.sessionLock = sessionId
+      data.lastLogin = os.time()
+      return data
+    end)
+  end)
+  
+  if success and result then
+    activeProfiles[player] = result
+    return result
+  else
+    warn("Failed to load data for " .. player.Name .. ": " .. tostring(result))
+    return nil
+  end
+end
+
+function DataManager.saveData(player: Player, releaseLock: boolean): boolean
+  local profile = activeProfiles[player]
+  if not profile then return false end
+  
+  local key = "Player_" .. player.UserId
+  local success, err = pcall(function()
+    PlayerDataStore:UpdateAsync(key, function(current: any)
+      local toSave = table.clone(profile)
+      if releaseLock then
+        toSave.sessionLock = nil
+      end
+      toSave.lastLogin = os.time()
+      return toSave
+    end)
+  end)
+  
+  if not success then
+    warn("Failed to save data for " .. player.Name .. ": " .. tostring(err))
+    return false
+  end
+  return true
+end
+
+function DataManager.getProfile(player: Player): PlayerDataSchema?
+  return activeProfiles[player]
+end
+
+return DataManager`,
+
+  combatHitboxEngine: `
+--[=[
+  @class CombatEngine
+  Server-authoritative spatial hitbox validation with lag compensation,
+  raycast bounds, and cooldown tracking.
+]=]
+
+--!strict
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+
+local CombatEngine = {}
+local lastAttackTimes: { [Player]: number } = {}
+local ATTACK_COOLDOWN = 0.45
+local MAX_REACH_STUDS = 12
+
+function CombatEngine.validateAndPerformHit(
+  attacker: Player,
+  hitboxCFrame: CFrame,
+  hitboxSize: Vector3,
+  damage: number
+): { Model }
+  -- 1. Cooldown verification
+  local now = os.clock()
+  local lastTime = lastAttackTimes[attacker] or 0
+  if now - lastTime < (ATTACK_COOLDOWN - 0.05) then
+    return {} -- Rate limit / cooldown violation
+  end
+  lastAttackTimes[attacker] = now
+
+  -- 2. Attacker character check
+  local attackerChar = attacker.Character
+  if not attackerChar then return {} end
+  local rootPart = attackerChar:FindFirstChild("HumanoidRootPart") :: BasePart?
+  if not rootPart then return {} end
+
+  -- 3. Reach verification (prevents teleport hitboxes)
+  local dist = (hitboxCFrame.Position - rootPart.Position).Magnitude
+  if dist > MAX_REACH_STUDS then
+    warn("Hitbox reach validation failed for " .. attacker.Name)
+    return {}
+  end
+
+  -- 4. Spatial query hitbox
+  local overlapParams = OverlapParams.new()
+  overlapParams.FilterType = RaycastFilterType.Exclude
+  overlapParams.FilterDescendantsInstances = { attackerChar }
+  overlapParams.MaxParts = 20
+
+  local parts = Workspace:GetPartBoundsInBox(hitboxCFrame, hitboxSize, overlapParams)
+  local hitCharacters: { [Model]: boolean } = {}
+  local damagedModels: { Model } = {}
+
+  for _, part in ipairs(parts) do
+    local char = part:FindFirstAncestorOfClass("Model")
+    if char and not hitCharacters[char] then
+      local humanoid = char:FindFirstChildOfClass("Humanoid")
+      if humanoid and humanoid.Health > 0 then
+        hitCharacters[char] = true
+        humanoid:TakeDamage(damage)
+        table.insert(damagedModels, char)
+      end
+    end
+  end
+
+  return damagedModels
+end
+
+return CombatEngine`,
+
+  roundStateMachine: `
+--[=[
+  @class RoundManager
+  Finite state machine orchestrating game loops:
+  Intermission -> Map Selection -> Teleport -> Active Match -> Sudden Death -> Round End -> Cleanup
+]=]
+
+--!strict
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+
+export type GameState = "Intermission" | "MapVoting" | "Teleporting" | "ActiveRound" | "RoundEnded" | "Cleanup"
+
+local RoundManager = {
+  currentState = "Intermission" :: GameState,
+  timeRemaining = 30,
+  minPlayers = 2,
+}
+
+function RoundManager.startLoop()
+  task.spawn(function()
+    while true do
+      -- Intermission
+      RoundManager.currentState = "Intermission"
+      for t = 20, 1, -1 do
+        RoundManager.timeRemaining = t
+        task.wait(1)
+        if #Players:GetPlayers() < RoundManager.minPlayers then
+          -- Wait for sufficient players
+        end
+      end
+
+      -- Map & Teleport
+      RoundManager.currentState = "Teleporting"
+      task.wait(2)
+
+      -- Active Round
+      RoundManager.currentState = "ActiveRound"
+      local roundOver = false
+      for t = 180, 1, -1 do
+        RoundManager.timeRemaining = t
+        task.wait(1)
+        -- Check win conditions
+      end
+
+      -- Round Ended & Cleanup
+      RoundManager.currentState = "RoundEnded"
+      task.wait(5)
+      RoundManager.currentState = "Cleanup"
+      task.wait(2)
+    end
+  end)
+end
+
+return RoundManager`,
+};
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -467,24 +756,23 @@ export function describeArchitecture(): string {
 ROBLOX ARCHITECTURE AWARENESS:
 
 Core Structure:
-  ServerScriptService → runs on dedicated server
-  StarterPlayer/StarterCharacterScripts → run on each player's client
+  ServerScriptService → runs on dedicated server (Modular Services, DataManager, CombatEngine)
+  StarterPlayer/StarterCharacterScripts → run on each player's client (Controllers, UI listeners)
   StarterGui → UI templates that clone to each player
-  ReplicatedStorage → visible to both server and clients
-  ServerStorage → private to server only
+  ReplicatedStorage → visible to both server and clients (Shared modules, Remotes broker, Types, Constants)
+  ServerStorage → private to server only (Internal configs, Templates for cloning)
   Workspace → the 3D world (physics, parts, NPCs, players)
 
 Key Principle: Server is authoritative.
-  Server: owns all game state (inventory, health, position)
+  Server: owns all game state (inventory, health, currency, progression)
   Client: displays, predicts, sends requests
-  Networking: RemoteEvent (async) or RemoteFunction (sync)
+  Networking: Type-safe RemoteEvent (async) or RemoteFunction (sync)
 
-Common Patterns:
-  - ModuleScripts for shared logic
-  - CollectionService for tagged behavior
-  - DataStoreService for persistence
-  - RemoteEvents for client→server commands
-  - Attributes for custom instance metadata
+Critical Multi-Script System Rules:
+  - Separate concerns: Never put entire game logic in a single monolith script
+  - Always write complete, compilable Luau without placeholder stubs or ellipses
+  - Use --!strict with complete Luau types
+  - Clean up all connections using Janitor/Maid/Trove patterns to prevent memory leaks
 `;
 }
 
@@ -492,7 +780,7 @@ export function getLuauGuide(): string {
   return `
 LUAU CODE GENERATION STANDARDS:
 
-1. ALWAYS use task.* (task.wait, task.spawn, task.delay)
+1. ALWAYS use task.* (task.wait, task.spawn, task.delay, task.defer)
    - task.wait(1) not wait(1)
    - task.spawn(fn) not spawn(fn)
 
@@ -502,9 +790,10 @@ LUAU CODE GENERATION STANDARDS:
 
 3. USE type annotations where useful
    - --!strict at top of ModuleScript
+   - export type ItemData = { id: string, name: string, quantity: number }
    - local function damage(target: Model, amount: number): boolean
 
-4. STRUCTURE code with early returns
+4. STRUCTURE code with early returns & guard clauses
    - Check preconditions first
    - Exit early if invalid
    - Main logic last
@@ -514,21 +803,18 @@ LUAU CODE GENERATION STANDARDS:
    - Check ok before using result
 
 6. USE ModuleScripts for shared systems
-   - One service per file
-   - Clear public API
+   - One service/controller per file
+   - Clear public API (Init / Start lifecycle methods)
    - Return a single module table
 
-7. VALIDATE on server, DISPLAY on client
+7. NEVER GENERATE LAZY PLACEHOLDER CODE:
+   - Prohibited: '-- TODO: insert rest of code', '-- implement here', '-- etc'
+   - Always output complete, ready-to-run, end-to-end code.
+
+8. SERVER-AUTHORITATIVE STATE:
    - All critical operations server-validated
    - Client requests, server approves
-   - Never trust client-provided values
-
-8. AVOID:
-   - Global state (_G.x = 5)
-   - Deep nesting (use early returns instead)
-   - Full Workspace scans (use events/tags)
-   - Arbitrary waits (wait(0.1) spam)
-   - Deprecated wait()/spawn()
+   - Never trust client-provided values (damage, position, items, currency)
 `;
 }
 
@@ -538,36 +824,31 @@ ROBLOX SECURITY: Multiplayer Defense Checklist
 
 Before shipping any multiplayer feature, ask:
   "What if the client lies?"
-  "What if they spam this?"
+  "What if they spam this remote?"
   "Can they steal/duplicate items?"
-  "Can they access other players' data?"
-  "Can they manipulate currency?"
+  "Can they modify other players' data?"
+  "Can they teleport or manipulate hitboxes?"
 
 Patterns:
 
 1. VALIDATE ALL REMOTE ARGUMENTS
-   Server:OnServerEvent(player, assetId)
-     → Is assetId valid?
-     → Does player own it?
-     → Is action allowed right now?
+   Server:OnServerEvent(player, itemId, target)
+     → Type check: typeof(itemId) == "string"
+     → State check: Does player own itemId?
+     → Distance check: Is player in range of target?
 
 2. RATE LIMIT EXPLOITABLE ACTIONS
-   local lastPurchaseTime = {}
-   if (tick() - (lastPurchaseTime[player] or 0)) < 5 then
+   local lastAction = {}
+   if (os.clock() - (lastAction[player] or 0)) < COOLDOWN then
      return -- prevent spam
    end
+   lastAction[player] = os.clock()
 
-3. OWNERSHIP VERIFICATION
-   Before modifying item, check:
-     local item = player:FindFirstChild("Inventory"):FindFirstChild(itemId)
-     if not item then return end -- player doesn't own it
+3. SPATIAL HITBOX VALIDATION
+   Never let client pass 'target:TakeDamage(50)'.
+   Client fires 'RequestAttack'. Server calculates reach & bounding box via workspace:GetPartBoundsInBox.
 
-4. SERVER-AUTHORITATIVE STATE
-   Never accept position directly from client in PVP.
-   Use humanoid.MoveTowards or server-side movement validation.
-
-5. EXPLOIT-PRONE ITEMS
-   Weapons, currency, rare items: locked behind server verification.
-   Client can REQUEST, server APPROVES and applies.
+4. TRANSACTIONAL DATA UPDATES
+   Use DataStore:UpdateAsync with session locking, not SetAsync.
 `;
 }

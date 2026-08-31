@@ -7,6 +7,8 @@
 
 export type SpecialistMode =
   | "ROBLOX_LUAU_ENGINEER"
+  | "ROBLOX_SYSTEM_ARCHITECT"
+  | "ROBLOX_DEEP_SEARCH_ENGINEER"
   | "ROBLOX_GAMEPLAY_ENGINEER"
   | "ROBLOX_UI_ENGINEER"
   | "ROBLOX_NETWORK_ENGINEER"
@@ -25,6 +27,86 @@ export interface SpecialistProfile {
 }
 
 const SPECIALISTS: Record<SpecialistMode, SpecialistProfile> = {
+  ROBLOX_SYSTEM_ARCHITECT: {
+    name: "ROBLOX_SYSTEM_ARCHITECT",
+    title: "Roblox System Architect & Framework Engineer",
+    focus: [
+      "Large-scale multi-script systems",
+      "Service & Controller architecture (Knit style)",
+      "Cross-service communication & signals",
+      "Session-locked DataStores (ProfileService)",
+      "Full game loop state machines",
+      "Zero-placeholder complete implementations",
+      "Production-ready codebase scaffolding",
+    ],
+    toolPreference: [
+      "roblox_get_script",
+      "roblox_set_script",
+      "roblox_deep_search_scripts",
+      "file_write",
+      "file_read",
+      "file_list",
+      "roblox_create",
+    ],
+    systemPromptAddition: `
+You are a ROBLOX SYSTEM ARCHITECT & FRAMEWORK SPECIALIST.
+
+When designing and generating large systems or big scripts:
+1. DECOMPOSE INTO CLEAN TIERS:
+   - Server Services (ServerScriptService): Authoritative logic, data persistence, security validation
+   - Client Controllers (StarterPlayerScripts): Input handling, UI binding, local prediction, VFX
+   - Shared Modules (ReplicatedStorage): Type definitions, networking bridge, math/spatial utilities
+   - Remotes Broker (ReplicatedStorage.Remotes): Centralized, type-safe RemoteEvents & RemoteFunctions
+
+2. ZERO PLACEHOLDER RULE:
+   - NEVER emit incomplete stubs like '-- TODO: implement logic', '-- rest of code here', or '-- handle cases'.
+   - ALWAYS write full, production-ready, compilable Luau code for every module in the architecture.
+
+3. STRICT LUAU TYPING & OOP:
+   - Always place '--!strict' at the top of ModuleScripts.
+   - Define exported types (export type CustomType = { ... }).
+   - Implement metatable-based OOP or Service table lifecycles with :Init() and :Start().
+
+4. COMPLETE LIFECYCLE & MEMORY CLEANUP:
+   - Use Maid/Janitor patterns or explicit connection trackers to clean up event connections on destruction/player leave.
+   - Prevent memory leaks and dangling RBXScriptConnections.
+`,
+  },
+
+  ROBLOX_DEEP_SEARCH_ENGINEER: {
+    name: "ROBLOX_DEEP_SEARCH_ENGINEER",
+    title: "Roblox Deep Search & Codebase Discovery Specialist",
+    focus: [
+      "Full DataModel & codebase deep search",
+      "Cross-script AST & regex pattern discovery",
+      "Creator Store / Toolbox deep multi-query search",
+      "Asset quality, verified creator filtering, & rating inspection",
+      "Dependency and RemoteEvent reference mapping",
+    ],
+    toolPreference: [
+      "roblox_deep_search_scripts",
+      "roblox_toolbox_deep_search",
+      "roblox_search",
+      "roblox_toolbox_search",
+      "roblox_toolbox_inspect",
+      "file_list",
+      "file_read",
+    ],
+    systemPromptAddition: `
+You are a ROBLOX DEEP SEARCH & CODEBASE DISCOVERY SPECIALIST.
+
+When searching for assets or analyzing game code:
+1. CODEBASE DEEP SEARCH:
+   - Use roblox_deep_search_scripts to scan all scripts for existing service references, remote event names, and functions.
+   - Map existing systems before implementing new ones to prevent duplicate or conflicting logic.
+
+2. TOOLBOX DEEP SEARCH:
+   - Use roblox_toolbox_deep_search for comprehensive multi-variant semantic queries across the Creator Store.
+   - Filter and rank results by relevance, rating, and verified creator status.
+   - Inspect model contents and scripts using roblox_toolbox_inspect before recommending asset insertion.
+`,
+  },
+
   ROBLOX_LUAU_ENGINEER: {
     name: "ROBLOX_LUAU_ENGINEER",
     title: "Luau/Roblox Code Engineer",
@@ -40,6 +122,7 @@ const SPECIALISTS: Record<SpecialistMode, SpecialistProfile> = {
       "roblox_get_script",
       "roblox_set_script",
       "roblox_edit_script",
+      "roblox_deep_search_scripts",
       "file_read",
       "file_edit",
     ],
@@ -47,28 +130,14 @@ const SPECIALISTS: Record<SpecialistMode, SpecialistProfile> = {
 You are a LUAU/ROBLOX CODE SPECIALIST.
 
 When generating code:
-1. Always use task.wait(), task.spawn(), task.delay() — NEVER wait(), spawn()
+1. Always use task.wait(), task.spawn(), task.delay(), task.defer() — NEVER wait(), spawn()
 2. Prefer local scope and explicit service references
 3. Use type annotations for new ModuleScripts (--!strict)
-4. Structure with early returns to minimize nesting
+4. Structure with early returns and guard clauses
 5. Wrap risky operations in pcall()
 6. One responsibility per ModuleScript
 7. Always validate arguments and return meaningful errors
-8. Follow naming: PascalCase for services, camelCase for functions
-
-Before submitting code:
-  - Read the existing script if editing
-  - Preserve unrelated code
-  - Test syntax mentally
-  - Verify service names are correct
-  - Check that remotes are used appropriately
-
-Never generate code that:
-  - Uses deprecated wait()/spawn()
-  - Trusts client-provided critical values on server
-  - Creates infinite loops without escape conditions
-  - Leaks memory (dangling connections, growing tables)
-  - Uses arbitrary waits for logic flow
+8. Never leave placeholder comments or unfinished functions
 `,
   },
 
@@ -555,6 +624,17 @@ interface DetectionContext {
 }
 
 const KEYWORDS_BY_MODE: Record<SpecialistMode, RegExp[]> = {
+  ROBLOX_SYSTEM_ARCHITECT: [
+    /architecture|framework|modular|system|big.*script|large.*script|full.*system/i,
+    /knit|service.*controller|datastore.*system|profileservice|inventory.*system/i,
+    /combat.*system|match.*system|round.*system|economy.*system|scaffold/i,
+    /multi.*script|entire.*system|clean.*architecture|session.*lock/i,
+  ],
+  ROBLOX_DEEP_SEARCH_ENGINEER: [
+    /deep.*search|search.*code|find.*script|search.*toolbox|find.*asset/i,
+    /search.*game|find.*remote|locate.*function|search.*model|marketplace.*search/i,
+    /deep.*scan|find.*references|search.*all/i,
+  ],
   ROBLOX_LUAU_ENGINEER: [
     /script|code|module|luau|function|loop|if|pcall|error|debug|lint|syntax/i,
     /write|generate|create.*script|refactor|fix.*code|edit.*lua/i,
