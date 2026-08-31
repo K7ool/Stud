@@ -18,6 +18,9 @@ export function ExecutionResultCard({
   onRetry,
   className,
 }: ExecutionResultCardProps) {
+  // Safety check
+  if (!result || !result.status || !result.title) return null;
+
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(["summary"])
   );
