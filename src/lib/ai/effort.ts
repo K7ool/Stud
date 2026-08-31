@@ -63,40 +63,20 @@ const ANTHROPIC_BUDGET: Record<"low" | "medium" | "high", number> = {
 
 /**
  * Build the `providerOptions` to pass to streamText/generateText for a given
- * (provider, model, effort) tuple. Returns {} when no shaping is supported.
+ * (provider, model, effort) tuple.
+ *
+ * Auto-think / effort shaping is disabled: we always return {} so no
+ * `reasoning_effort` or Anthropic `thinking` parameters are sent. Some
+ * provider/model/account combinations reject those parameters with
+ * "no remaining credits" or similar billing errors, and shaping isn't worth
+ * breaking requests for. The UI effort selector remains as a no-op so existing
+ * saved settings and the selector still load; the API just gets clean requests.
  */
 export function buildProviderOptions(
-  provider: ProviderType,
-  modelId: string,
-  effort: EffortLevel,
+  _provider: ProviderType,
+  _modelId: string,
+  _effort: EffortLevel,
 ): Record<string, unknown> {
-  const level = normalize(effort);
-  if (!level) return {};
-
-  if (provider === "openai" || provider === "openrouter" || provider === "codex") {
-    // For codex, shaping is not possible from the client (custom protocol).
-    if (provider === "codex") return {};
-    // For openai and openrouter, only send reasoning_effort for reasoning-capable
-    // models — otherwise the request would be rejected. "none" (Instant mode)
-    // is passed through so the API disables hidden reasoning.
-    if (!isReasoningCapable(modelId)) return {};
-    return {
-      openai: {
-        reasoningEffort: level,
-      },
-    };
-  }
-
-  if (provider === "anthropic") {
-    // "none" (Instant mode) means no extended thinking.
-    if (level === "none") return {};
-    return {
-      anthropic: {
-        thinking: { type: "enabled", budgetTokens: ANTHROPIC_BUDGET[level] },
-      },
-    };
-  }
-
   return {};
 }
 
