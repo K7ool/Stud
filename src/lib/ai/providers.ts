@@ -13,6 +13,8 @@ export type ProviderType = "openai" | "anthropic" | "codex" | "openrouter" | "op
 const OPENROUTER_API_BASE = "https://openrouter.ai/api/v1";
 const OPENCODE_ZEN_API_BASE = "https://opencode.ai/zen/v1";
 
+const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
+
 export function getProvider(type: ProviderType, apiKey: string) {
   switch (type) {
     case "openai":
@@ -29,9 +31,11 @@ export function getProvider(type: ProviderType, apiKey: string) {
     case "opencode":
       // OpenCode Zen is OpenAI-compatible; free models (Big Pickle, etc.) accept
       // anonymous requests, so an empty key is tolerated.
+      // In web mode, route through the /api/opencode proxy (Zen does not send
+      // CORS headers so a direct browser call is blocked).
       return createOpenAI({
         apiKey: apiKey || "anonymous",
-        baseURL: OPENCODE_ZEN_API_BASE,
+        baseURL: isWebMode ? "/api/opencode/v1" : OPENCODE_ZEN_API_BASE,
       });
     default:
       throw new Error(`Unknown provider: ${type}`);
