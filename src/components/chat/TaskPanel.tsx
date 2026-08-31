@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   X,
   Pause,
@@ -220,9 +221,9 @@ function StepsList({ steps }: { steps: TaskStep[] }) {
 
 export function TaskPanel({ open, onClose }: TaskPanelProps) {
   const tasks = useTaskStore((s) => s.tasks);
-  const currentTask = useTaskStore((s) => s.currentTask());
-  const queue = useTaskStore((s) => s.queue());
-  const history = useTaskStore((s) => s.history());
+  const currentTask = useTaskStore(useShallow((s) => s.currentTask()));
+  const queue = useTaskStore(useShallow((s) => s.queue()));
+  const history = useTaskStore(useShallow((s) => s.history()));
   const cancel = useTaskStore((s) => s.cancel);
   const retry = useTaskStore((s) => s.retry);
   const reorder = useTaskStore((s) => s.reorder);
