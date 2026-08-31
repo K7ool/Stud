@@ -9,6 +9,13 @@ import { z } from "zod"
 import { studioRequest, isStudioConnected, notConnectedError, cachedStudioRequest, invalidateCache } from "./client"
 import { searchToolbox, getAssetDetails, type AssetCategory } from "./toolbox"
 import * as fileOps from "@/lib/file-ops"
+import { useTaskStore } from "@/stores/tasks"
+import {
+  nextPendingStep,
+  reEvaluateBlocking,
+  normalizePriority,
+} from "@/lib/ai/todo"
+import type { TaskStep } from "@/lib/chat/api"
 
 // ============================================================================
 // Types
@@ -1589,34 +1596,226 @@ The suggestions are context-aware based on the current project.`,
 // Task plan tool — used by the AI to publish/update its own step list
 // ============================================================================
 
+// ============================================================================
+// Task plan tool — the real TODO. The agent calls this to publish, mutate and
+// control its own structured step list. It genuinely writes to the task store
+// (not a cosmetic stub): statuses, dependencies, progress and replanning are
+// enforced here so the UI reflects real execution state.
+// ============================================================================
+
+interface PlanStepInput {
+  id: string;
+  title: string;
+  dependsOn?: string[];
+  priority?: "high" | "normal" | "low";
+}
+
+/** Resolve the task the agent is currently driving. */
+function activePlanTask() {
+  const ts = useTaskStore.getState();
+  const id = ts.activeTaskId ?? ts.currentTask()?.id ?? null;
+  if (!id) return null;
+  return ts.tasks.find((t) => t.id === id) ?? null;
+}
+
+function buildSteps(input: PlanStepInput[], startOrder: number): TaskStep[] {
+  return input.map((s, i) => ({
+    id: s.id || `step_${Date.now()}_${i}`,
+    title: s.title,
+    status: "pending" as const,
+    order: startOrder + i,
+    dependsOn: s.dependsOn ?? [],
+    priority: normalizePriority(s.priority),
+  }));
+}
+
+/** Mark a step and auto-advance to the next eligible one. Returns summary. */
+async function advanceSteps(state: { stepId?: string; result?: string; mark: "completed" | "skipped" | "failed" | "cancelled" }, error?: string) {
+  const task = activePlanTask();
+  if (!task) return { ok: false, error: "No active task to update" };
+
+  const ts = useTaskStore.getState();
+  const now = Date.now();
+
+  // If no explicit step, act on the currently in-progress one.
+  const targetId =
+    state.stepId ||
+    task.steps.find((s) => s.status === "in_progress")?.id || "";
+
+  let steps = task.steps.map((s) => {
+    if (s.id !== targetId) return s;
+    const next: TaskStep = { ...s };
+    next.completedAt = now;
+    if (state.mark === "completed") {
+      next.status = "completed";
+      next.stepProgress = 1;
+      if (state.result) next.result = state.result;
+      delete next.error;
+      delete next.blockedReason;
+    } else if (state.mark === "skipped") {
+      next.status = "skipped";
+      if (state.result) next.result = state.result;
+    } else if (state.mark === "failed") {
+      next.status = "failed";
+      if (error) next.error = error;
+    } else {
+      next.status = "cancelled";
+    }
+    return next;
+  });
+
+  // Auto-start the next eligible step only for completed/skipped (forward motion).
+  if (state.mark === "completed" || state.mark === "skipped") {
+    const stillRunning = steps.find((s) => s.status === "in_progress");
+    if (!stillRunning) {
+      const next = nextPendingStep(steps);
+      if (next) {
+        steps = steps.map((s) =>
+          s.id === next.id
+            ? { ...s, status: "in_progress" as const, startedAt: s.startedAt ?? now, attempts: (s.attempts ?? 0) + 1 }
+            : s
+        );
+      }
+    }
+  }
+
+  await ts.setSteps(task.id, steps);
+  return { ok: true, stepId: targetId, status: steps.find((s) => s.id === targetId)?.status };
+}
+
 export const updateTaskPlan = tool({
-  description: `Update the visible task plan. Use this when working on a non-trivial task.
+  description: `Control the structured TODO plan for the current task. This is REAL state —
+the UI reflects exactly what you set here. Use it for any non-trivial task.
 
 ACTIONS:
-- "replace": set the entire plan (provide steps[]).
-- "advance": mark a step as completed and start the next.
-- "add": append a new step to the existing plan.
-- "skip": mark a step as skipped (e.g. no longer needed after inspection).
+- "replace": (re)create the entire plan. Pass steps[] with id, title, optional dependsOn[] and priority. Auto-starts the first ready step.
+- "replan": same as replace but preserves the status/progress of any step whose id already exists (use for reordering/rewriting while keeping completed work).
+- "add": append new step(s) to the existing plan (steps[]).
+- "remove": delete step(s) from the plan (stepIds[]).
+- "advance": mark a step completed (defaults to the current in-progress one) and auto-start the next eligible step. Pass optional result.
+- "skip": mark a step skipped (defaults to current) and auto-start the next.
+- "fail": mark current step failed with failure.
+- "block": mark current step blocked with blockedReason (e.g. waiting on data the user must provide).
+- "unblock": clear a blocked step (mark it pending again).
+- "cancel": mark current step cancelled (abandon it) without starting the next.
+- "progress": set live progress (0..1) on the current step.
 
-Steps should be concrete, scoped, and ordered. Each step becomes a TODO row.
-Do NOT create plans for trivial/single-step tasks.`,
+Steps are ordered and use dependsOn to express prerequisites. A pending step whose
+prerequisites aren't met is auto-blocked. Do NOT use for trivial/single-step tasks.`,
   inputSchema: z.object({
-    action: z.enum(["replace", "advance", "add", "skip"]),
-    currentStep: z.string().optional().describe("Step id to advance/skip (for advance/skip actions)."),
+    action: z.enum(["replace", "replan", "add", "remove", "advance", "skip", "fail", "block", "unblock", "cancel", "progress"]),
+    currentStep: z.string().optional().describe("Step id to target for advance/skip/fail/block/unblock/cancel/progress. Omit to use the current in-progress step."),
+    stepIds: z.array(z.string()).optional().describe("Step ids for remove."),
     steps: z
       .array(
         z.object({
           id: z.string(),
           title: z.string(),
           dependsOn: z.array(z.string()).optional().default([]),
+          priority: z.enum(["high", "normal", "low"]).optional(),
         })
       )
       .optional()
-      .describe("Step definitions for replace/add."),
-    note: z.string().optional().describe("Short status note shown in the panel."),
+      .describe("Step definitions for replace/replan/add."),
+    result: z.string().optional().describe("Short result/note for the completed or skipped step."),
+    failure: z.string().optional().describe("Reason for fail."),
+    blockedReason: z.string().optional().describe("Reason for block."),
+    progress: z.number().min(0).max(1).optional().describe("Live progress 0..1 for progress action."),
+    note: z.string().optional().describe("Human note shown in the panel (ignored for state)."),
   }),
-  execute: async (input: { action: "replace" | "advance" | "add" | "skip"; currentStep?: string; steps?: Array<{ id: string; title: string; dependsOn?: string[] }>; note?: string }) => {
-    return { ok: true, ...input };
+  execute: async (input: {
+    action: "replace" | "replan" | "add" | "remove" | "advance" | "skip" | "fail" | "block" | "unblock" | "cancel" | "progress";
+    currentStep?: string;
+    stepIds?: string[];
+    steps?: PlanStepInput[];
+    result?: string;
+    failure?: string;
+    blockedReason?: string;
+    progress?: number;
+    note?: string;
+  }) => {
+    const task = activePlanTask();
+    if (!task) return { ok: false, error: "No active task to update plan for" };
+    const ts = useTaskStore.getState();
+    const targetId = input.currentStep || task.steps.find((s) => s.status === "in_progress")?.id || "";
+
+    switch (input.action) {
+      case "replace":
+      case "replan": {
+        if (!input.steps || input.steps.length === 0) {
+          return { ok: false, error: "replace/replan requires steps[]" };
+        }
+        const now = Date.now();
+        const existing = new Map(task.steps.map((s) => [s.id, s]));
+        let steps = buildSteps(input.steps, 0);
+        if (input.action === "replan") {
+          // Preserve status/attempts of steps we already know.
+          steps = steps.map((s, i) => {
+            const prev = existing.get(s.id);
+            return prev
+              ? { ...prev, order: i, title: s.title, dependsOn: s.dependsOn, priority: s.priority }
+              : s;
+          });
+        }
+        steps = reEvaluateBlocking(steps);
+        const stillRunning = steps.find((s) => s.status === "in_progress");
+        if (!stillRunning) {
+          const first = nextPendingStep(steps);
+          if (first) {
+            steps = steps.map((s) =>
+              s.id === first.id
+                ? { ...s, status: "in_progress" as const, startedAt: s.startedAt ?? now, attempts: (s.attempts ?? 0) + 1 }
+                : s
+            );
+          }
+        }
+        await ts.setSteps(task.id, steps);
+        return {
+          ok: true,
+          action: input.action,
+          steps: steps.length,
+          started: steps.find((s) => s.status === "in_progress")?.id || "",
+        };
+      }
+
+      case "add": {
+        if (!input.steps || input.steps.length === 0) {
+          return { ok: false, error: "add requires steps[]" };
+        }
+        const additions = buildSteps(input.steps, task.steps.length);
+        await ts.setSteps(task.id, reEvaluateBlocking([...task.steps, ...additions]));
+        return { ok: true, action: "add", added: additions.length, total: task.steps.length + additions.length };
+      }
+
+      case "remove": {
+        const ids = new Set(input.stepIds ?? []);
+        if (ids.size === 0) return { ok: false, error: "remove requires stepIds[]" };
+        const steps = reEvaluateBlocking(task.steps.filter((s) => !ids.has(s.id)));
+        await ts.setSteps(task.id, steps);
+        return { ok: true, action: "remove", remaining: steps.length };
+      }
+
+      case "advance":
+        return advanceSteps({ stepId: targetId, result: input.result, mark: "completed" });
+      case "skip":
+        return advanceSteps({ stepId: targetId, result: input.result, mark: "skipped" });
+      case "fail":
+        return advanceSteps({ stepId: targetId, mark: "failed" }, input.failure || "Step failed");
+      case "cancel":
+        return advanceSteps({ stepId: targetId, mark: "cancelled" });
+      case "block":
+        await ts.setStepStatus(task.id, targetId, "blocked", { blockedReason: input.blockedReason || "Blocked" });
+        return { ok: true, action: "block", stepId: targetId, blocked: true };
+      case "unblock":
+        await ts.setStepStatus(task.id, targetId, "pending");
+        return { ok: true, action: "unblock", stepId: targetId, unblocked: true };
+      case "progress": {
+        await ts.setStepProgress(task.id, targetId, input.progress ?? 0);
+        return { ok: true, action: "progress", stepId: targetId, progress: input.progress ?? 0 };
+      }
+      default:
+        return { ok: false, error: `Unknown action: ${input.action}` };
+    }
   },
 })
 

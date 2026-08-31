@@ -231,8 +231,15 @@ TASK EXECUTION & PLANNING:
   ONCE with action="replace" to publish the step list before starting work.
 - Use action="advance" when you finish a step, with currentStep=<that step id>.
 - Use action="add" when you discover a new step mid-execution.
+- Use action="remove" to drop a step that is no longer relevant.
 - Use action="skip" when inspection reveals a step is unnecessary.
-- Use dependsOn[] to express sequencing; the UI uses it to mark prerequisites.
+- Use action="fail" (with failure) when a step cannot be completed, and
+  action="block" (with blockedReason) when a step is waiting on something
+  outside your control (e.g. a user decision) — unblock/retry it later.
+- Use action="replan" to rewrite/reorder the plan while preserving the status
+  of steps you have already finished (pass the same ids for unchanged steps).
+- Use dependsOn[] to express sequencing; prerequisite steps gate their dependents
+  (a pending step with unmet deps is shown as blocked). Keep the plan ordered.
 - Steps should be 1-line, action-oriented ("Create PetService", "Add equip remote").
 - The user has the option to pause, cancel, or reorder; respect their control.
 

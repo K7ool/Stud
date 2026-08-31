@@ -663,7 +663,11 @@ Just do it. No task plan needed.
 1. Call update_task_plan ONCE with action="replace" to publish steps
 2. Use action="advance" when finishing each step
 3. Use action="skip" if inspection reveals a step is unnecessary
-4. Use dependsOn[] to express sequencing
+4. Use action="add"/action="remove" to grow/shrink the plan as you learn
+5. Use action="block" (with reason) if a step waits on the user; unblock later
+6. Use action="fail" (with reason) if a step genuinely cannot be completed
+7. Use dependsOn[] to express sequencing — a step whose prerequisites aren't
+   done is shown as blocked until they complete
 
 ---
 

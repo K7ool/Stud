@@ -50,7 +50,6 @@ import { useChat } from "@/lib/ai/providers";
 import { extractMemories, generateConversationTitle } from "@/lib/ai/memory-extract";
 import { classifyComplexity, resolveMode } from "@/lib/ai/complexity";
 import { buildProviderOptions } from "@/lib/ai/effort";
-import type { TaskStep } from "@/lib/chat/api";
 import { setAskUserHandler } from "@/lib/roblox/tools";
 import { getStudioSiteId } from "@/lib/roblox/client";
 import { autoDetectProject, setProjectPath, pickFolder } from "@/lib/file-ops";
@@ -1221,6 +1220,10 @@ export function Home() {
       if (t) taskId = t.id; // plan mode -> pending (status), but AI runs below
     }
 
+    // Let the update_task_plan tool resolve this task — the tool executes
+    // without knowing the UUID, so it reads the active id from the store.
+    if (taskId) useTaskStore.getState().setActiveTaskId(taskId);
+
     setStreaming(true);
     setError(null);
 
@@ -1312,90 +1315,14 @@ export function Home() {
             }
           }
 
-          // Handle update_task_plan: replace / add / advance / skip steps
-          if (taskId && toolResult.output && typeof toolResult.output === "object") {
-            const plan = toolResult.output as {
-              action?: string;
-              steps?: Array<{ id: string; title: string; dependsOn?: string[] }>;
-              currentStep?: string;
-              note?: string;
-            };
-            if (
-              plan.action &&
-              (plan.action === "replace" ||
-                plan.action === "add" ||
-                plan.action === "advance" ||
-                plan.action === "skip")
-            ) {
-              const ts = useTaskStore.getState();
-              const task = ts.tasks.find((t) => t.id === taskId);
-              if (task) {
-                if (plan.action === "replace" && Array.isArray(plan.steps)) {
-                  const newSteps: TaskStep[] = plan.steps.map((s, i) => ({
-                    id: s.id,
-                    title: s.title,
-                    order: i,
-                    status: "pending",
-                    dependsOn: s.dependsOn || [],
-                  }));
-                  if (newSteps.length > 0) {
-                    newSteps[0] = { ...newSteps[0], status: "in_progress", startedAt: Date.now() };
-                  }
-                  void ts.patch(taskId, {
-                    steps: newSteps,
-                    currentStep: newSteps[0]?.id || "",
-                    progress: newSteps.length > 0 ? 0.05 : 0,
-                  });
-                } else if (plan.action === "add" && Array.isArray(plan.steps)) {
-                  const startOrder = task.steps.length;
-                  const additions: TaskStep[] = plan.steps.map((s, i) => ({
-                    id: s.id,
-                    title: s.title,
-                    order: startOrder + i,
-                    status: "pending",
-                    dependsOn: s.dependsOn || [],
-                  }));
-                  void ts.patch(taskId, { steps: [...task.steps, ...additions] });
-                } else if (plan.action === "advance" && plan.currentStep) {
-                  const sid = plan.currentStep;
-                  const steps: TaskStep[] = task.steps.map((s) =>
-                    s.id === sid
-                      ? { ...s, status: "completed", completedAt: Date.now() }
-                      : s
-                  );
-                  const completedIds = new Set(
-                    steps.filter((s) => s.status === "completed").map((s) => s.id)
-                  );
-                  const next = steps.find(
-                    (s) =>
-                      s.status === "pending" &&
-                      s.dependsOn.every((d) => completedIds.has(d))
-                  );
-                  if (next) {
-                    steps[steps.indexOf(next)] = {
-                      ...next,
-                      status: "in_progress",
-                      startedAt: Date.now(),
-                    };
-                    void ts.patch(taskId, { steps, currentStep: next.id });
-                  } else {
-                    void ts.patch(taskId, { steps, currentStep: "" });
-                  }
-                } else if (plan.action === "skip" && plan.currentStep) {
-                  const sid = plan.currentStep;
-                  const steps: TaskStep[] = task.steps.map((s) =>
-                    s.id === sid
-                      ? { ...s, status: "skipped", completedAt: Date.now() }
-                      : s
-                  );
-                  void ts.patch(taskId, { steps });
-                }
-              }
-            }
-          }
+          // NOTE: update_task_plan is now a REAL tool — its execute() mutates
+          // the task store directly, so no client-side re-derivation is needed
+          // here (the old parsing block was removed to avoid double-applying).
         },
         onFinish: () => {
           console.log("[Home] Stream finished, total length:", fullText.length);
+          // The agent loop is done with this task; clear the active-task pointer.
+          useTaskStore.getState().setActiveTaskId(null);
           setStreaming(false);
 
           // Mark the task complete (or fail if no meaningful content).
@@ -1526,6 +1453,8 @@ export function Home() {
 
       // Mark running (in case it was pending/needs_resume).
       ts.setStatus(taskId, "running").catch(() => {});
+      // Point the update_task_plan tool at this task for the duration of the run.
+      ts.setActiveTaskId(taskId);
 
       // Reflect the task prompt into the chat (unless caller suppressed it).
       if (!opts?.silentUserMessage) {
@@ -1584,83 +1513,11 @@ export function Home() {
               result: toolResult.output,
             });
 
-            // update_task_plan: reflect step changes into the task.
-            if (toolResult.output && typeof toolResult.output === "object") {
-              const plan = toolResult.output as {
-                action?: string;
-                steps?: Array<{ id: string; title: string; dependsOn?: string[] }>;
-                currentStep?: string;
-              };
-              if (
-                plan.action &&
-                (plan.action === "replace" ||
-                  plan.action === "add" ||
-                  plan.action === "advance" ||
-                  plan.action === "skip")
-              ) {
-                const t = useTaskStore.getState().tasks.find((x) => x.id === taskId);
-                if (t) {
-                  const cur = useTaskStore.getState();
-                  if (plan.action === "replace" && Array.isArray(plan.steps)) {
-                    const newSteps: TaskStep[] = plan.steps.map((s, i) => ({
-                      id: s.id,
-                      title: s.title,
-                      order: i,
-                      status: "pending",
-                      dependsOn: s.dependsOn || [],
-                    }));
-                    if (newSteps.length > 0) {
-                      newSteps[0] = { ...newSteps[0], status: "in_progress", startedAt: Date.now() };
-                    }
-                    void cur.patch(taskId, {
-                      steps: newSteps,
-                      currentStep: newSteps[0]?.id || "",
-                      progress: newSteps.length > 0 ? 0.05 : 0,
-                    });
-                  } else if (plan.action === "add" && Array.isArray(plan.steps)) {
-                    const additions: TaskStep[] = plan.steps.map((s, i) => ({
-                      id: s.id,
-                      title: s.title,
-                      order: t.steps.length + i,
-                      status: "pending",
-                      dependsOn: s.dependsOn || [],
-                    }));
-                    void cur.patch(taskId, { steps: [...t.steps, ...additions] });
-                  } else if (plan.action === "advance" && plan.currentStep) {
-                    const steps: TaskStep[] = t.steps.map((s) =>
-                      s.id === plan.currentStep
-                        ? { ...s, status: "completed", completedAt: Date.now() }
-                        : s
-                    );
-                    const completedIds = new Set(
-                      steps.filter((s) => s.status === "completed").map((s) => s.id)
-                    );
-                    const next = steps.find(
-                      (s) => s.status === "pending" && s.dependsOn.every((d) => completedIds.has(d))
-                    );
-                    if (next) {
-                      steps[steps.indexOf(next)] = {
-                        ...next,
-                        status: "in_progress",
-                        startedAt: Date.now(),
-                      };
-                      void cur.patch(taskId, { steps, currentStep: next.id });
-                    } else {
-                      void cur.patch(taskId, { steps, currentStep: "" });
-                    }
-                  } else if (plan.action === "skip" && plan.currentStep) {
-                    const steps: TaskStep[] = t.steps.map((s) =>
-                      s.id === plan.currentStep
-                        ? { ...s, status: "skipped", completedAt: Date.now() }
-                        : s
-                    );
-                    void cur.patch(taskId, { steps });
-                  }
-                }
-              }
-            }
+            // update_task_plan is a real tool now — its execute() mutates the
+            // task store directly, so no client-side re-derivation is needed here.
           },
           onFinish: () => {
+            useTaskStore.getState().setActiveTaskId(null);
             updateMessage(assistantId, fullText);
             setStreaming(false);
             const t = useTaskStore.getState().tasks.find((x) => x.id === taskId);

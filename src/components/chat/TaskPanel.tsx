@@ -59,6 +59,8 @@ function stepIcon(s: TaskStep) {
   if (s.status === "completed") return <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />;
   if (s.status === "failed") return <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0" />;
   if (s.status === "in_progress") return <CircleDot className="w-3.5 h-3.5 text-primary animate-pulse shrink-0" />;
+  if (s.status === "blocked") return <CircleDashed className="w-3.5 h-3.5 text-amber-500 shrink-0" />;
+  if (s.status === "cancelled") return <X className="w-3.5 h-3.5 text-muted-foreground shrink-0" />;
   if (s.status === "skipped") return <X className="w-3.5 h-3.5 text-muted-foreground shrink-0" />;
   return <CircleDashed className="w-3.5 h-3.5 text-muted-foreground shrink-0" />;
 }
@@ -182,39 +184,89 @@ function TaskRow({
   );
 }
 
-function StepsList({ steps }: { steps: TaskStep[] }) {
+function StepsList({ steps, taskId }: { steps: TaskStep[]; taskId?: string }) {
   if (!steps || steps.length === 0) {
     return (
       <div className="text-xs text-muted-foreground italic">No steps yet — the agent will plan as it goes.</div>
     );
   }
+  const ts = useTaskStore.getState;
   return (
     <ul className="space-y-1.5">
       {steps
         .slice()
         .sort((a, b) => a.order - b.order)
-        .map((s) => (
-          <li key={s.id} className="flex items-start gap-2 text-sm">
-            {stepIcon(s)}
-            <div className="flex-1 min-w-0">
-              <div
-                className={cn(
-                  "leading-snug",
-                  s.status === "completed" && "text-muted-foreground line-through",
-                  s.status === "in_progress" && "text-foreground font-medium"
+        .map((s) => {
+          const pct = Math.round((s.stepProgress ?? 0) * 100);
+          return (
+            <li key={s.id} className="flex items-start gap-2 text-sm">
+              {stepIcon(s)}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <div
+                    className={cn(
+                      "leading-snug",
+                      s.status === "completed" && "text-muted-foreground line-through",
+                      s.status === "in_progress" && "text-foreground font-medium",
+                      (s.status === "blocked" || s.status === "cancelled") && "text-muted-foreground"
+                    )}
+                  >
+                    {s.title}
+                  </div>
+                  {s.priority === "high" && (
+                    <span className="text-[9px] uppercase tracking-wider text-amber-600 font-semibold">high</span>
+                  )}
+                </div>
+
+                {s.blockedReason && s.status === "blocked" && (
+                  <div className="text-[10px] text-amber-600 mt-0.5">{s.blockedReason}</div>
                 )}
-              >
-                {s.title}
+
+                {s.status === "in_progress" && s.stepProgress !== undefined && (
+                  <div className="mt-1 h-1 w-full max-w-[220px] rounded-full bg-muted overflow-hidden">
+                    <div className="h-full bg-primary transition-all" style={{ width: `${pct}%` }} />
+                  </div>
+                )}
+
+                {s.result && s.status === "completed" && (
+                  <div className="text-[10px] text-muted-foreground mt-0.5">{s.result}</div>
+                )}
+                {s.error && s.status === "failed" && (
+                  <div className="text-[10px] text-red-500 mt-0.5">{s.error}</div>
+                )}
+                {s.attempts != null && s.attempts > 1 && (
+                  <div className="text-[10px] text-muted-foreground mt-0.5">attempts: {s.attempts}</div>
+                )}
               </div>
-              {s.result && s.status === "completed" && (
-                <div className="text-[10px] text-muted-foreground mt-0.5">{s.result}</div>
+              {taskId && (s.status === "failed" || s.status === "blocked") && (
+                <div className="flex items-center gap-0.5 shrink-0">
+                  {s.status === "blocked" && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-1.5 text-[10px]"
+                      onClick={() => ts().unblockStep(taskId, s.id)}
+                      title="Unblock"
+                    >
+                      <Play className="w-3 h-3" />
+                    </Button>
+                  )}
+                  {s.status === "failed" && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-1.5 text-[10px]"
+                      onClick={() => ts().startStep(taskId, s.id)}
+                      title="Retry step"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                    </Button>
+                  )}
+                </div>
               )}
-              {s.error && s.status === "failed" && (
-                <div className="text-[10px] text-red-500 mt-0.5">{s.error}</div>
-              )}
-            </div>
-          </li>
-        ))}
+            </li>
+          );
+        })}
     </ul>
   );
 }
@@ -347,7 +399,7 @@ export function TaskPanel({ open, onClose }: TaskPanelProps) {
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2">
                     Plan
                   </div>
-                  <StepsList steps={running.steps} />
+                  <StepsList steps={running.steps} taskId={running.id} />
                 </div>
               </div>
             ) : currentTask ? (
@@ -372,7 +424,7 @@ export function TaskPanel({ open, onClose }: TaskPanelProps) {
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2">
                     Plan
                   </div>
-                  <StepsList steps={currentTask.steps} />
+                  <StepsList steps={currentTask.steps} taskId={currentTask.id} />
                 </div>
               </div>
             ) : (

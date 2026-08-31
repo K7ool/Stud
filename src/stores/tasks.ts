@@ -41,10 +41,16 @@ export interface TaskState {
   tasks: Task[];
   hydrated: boolean;
   settings: TaskQueueSettings;
+  /** The task currently being driven by the agent loop, if any. This is how
+   *  the update_task_plan tool (which executes without knowing the UUID)
+   *  resolves which task to mutate. Set by Home.tsx at run start. */
+  activeTaskId: string | null;
 
   hydrate: () => Promise<void>;
   refresh: () => Promise<void>;
   refreshActive: () => Promise<void>;
+
+  setActiveTaskId: (id: string | null) => void;
 
   enqueue: (
     input: Omit<Task, "userId" | "queuePosition" | "progress" | "currentStep" | "steps" | "retryCount" | "updatedAt" | "status"> & {
@@ -67,7 +73,8 @@ export interface TaskState {
   setStepStatus: (taskId: string, stepId: string, status: TaskStep["status"], opts?: { error?: string; result?: string; blockedReason?: string }) => Promise<void>;
   setSteps: (taskId: string, steps: TaskStep[]) => Promise<void>;
   _persistSteps: (taskId: string, steps: TaskStep[]) => Promise<void>;
-  reorder: () => Promise<void>;  cancel: (id: string) => Promise<void>;
+  reorder: () => Promise<void>;
+  cancel: (id: string) => Promise<void>;
   retry: (id: string) => Promise<void>;
   startTask: (id: string) => Promise<void>;
 
@@ -159,6 +166,11 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
   tasks: readCache(),
   hydrated: false,
   settings: readSettings(),
+  activeTaskId: null,
+
+  setActiveTaskId: (id) => {
+    set({ activeTaskId: id });
+  },
 
   hydrate: async () => {
     if (get().hydrated) return;
