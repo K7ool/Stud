@@ -1,12 +1,19 @@
 import { create } from "zustand";
-import { isStudioConnected, isBridgeRunning, getGameInfo, type GameInfo } from "@/lib/roblox";
+import { isStudioConnected, isBridgeRunning, getGameInfo, getStudioSiteId, getConnectionDiagnostics, type GameInfo, type ConnectionDiagnostics } from "@/lib/roblox";
 import { useChatStore } from "./chat";
 
 // Throttle game-info refreshes (see checkConnection). Stored outside the store
 // so it isn't persisted/serialized.
 let lastGameInfoFetch = 0;
 
-export type ConnectionStatus = "disconnected" | "bridge_only" | "connected" | "reconnecting";
+export type ConnectionStatus =
+  | "disconnected"
+  | "bridge_only"
+  | "connected"
+  | "reconnecting"
+  | "mismatch"
+  | "outdated"
+  | "old_backend";
 
 export interface RobloxState {
   status: ConnectionStatus;
@@ -16,6 +23,7 @@ export interface RobloxState {
   consecutiveFailures: number;
   reconnectAttempts: number;
   gameInfo: GameInfo | null;
+  diagnostics: ConnectionDiagnostics | null;
 
   // Actions
   setStatus: (status: ConnectionStatus) => void;
@@ -33,6 +41,7 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
   consecutiveFailures: 0,
   reconnectAttempts: 0,
   gameInfo: null,
+  diagnostics: null,
 
   setStatus: (status) => set({ status }),
   
@@ -41,22 +50,28 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
     const now = new Date();
     
     try {
-      // First check if bridge is running
+      // First check if bridge is running (relay reachable, or local bridge up)
       const bridgeUp = await isBridgeRunning();
       if (!bridgeUp) {
         set({ 
           status: "disconnected", 
           lastCheck: now,
           error: "Bridge server not running",
+          diagnostics: null,
           consecutiveFailures: state.consecutiveFailures + 1,
         });
         return;
       }
-      
-      // Then check if Studio is connected
+
+      // In web mode, query the server-side connection session (source of truth)
+      // to determine REAL Studio connectivity, separate from the bridge being up.
+      const site = getStudioSiteId();
+      const conn = site ? await getConnectionDiagnostics(site) : null;
+      if (conn) set({ diagnostics: conn });
+
       const studioUp = await isStudioConnected();
-      
-      if (studioUp) {
+
+      if (studioUp && conn?.connected !== false) {
         // Refresh game info at most once per 30s; game info rarely changes and
         // fetching it every poll adds a redundant relay round-trip.
         if (Date.now() - lastGameInfoFetch > 30000) {
@@ -66,7 +81,6 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
 
         // Successfully connected
         if (state.consecutiveFailures > 0) {
-          // Was disconnected, now reconnecting
           set({
             status: "reconnecting",
             lastCheck: now,
@@ -74,12 +88,10 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
             consecutiveFailures: 0,
             reconnectAttempts: 0,
           });
-          // Wait a moment before declaring fully connected
           setTimeout(() => {
             set({ status: "connected", lastCheck: new Date() });
           }, 1000);
         } else {
-          // Already connected, keep status
           set({
             status: "connected",
             lastCheck: now,
@@ -88,12 +100,44 @@ export const useRobloxStore = create<RobloxState>()((set, get) => ({
             consecutiveFailures: 0,
           });
         }
-      } else {
-        // Bridge running but no client connected
+      } else if (conn && conn.exists) {
+        // The bridge is up and a plugin HAS registered for a site, but it isn't
+        // answering on this browser's site → diagnose why (mismatch / outdated /
+        // old backend) instead of a generic "disconnected".
+        let status: ConnectionStatus = "bridge_only";
+        let error = "Bridge server running but Roblox Studio not connected";
+
+        if (conn.connected) {
+          // Session is alive for this site, so /ping should round-trip. If the
+          // ping check above failed it's a transient issue.
+          status = "bridge_only";
+        } else if (conn.oldBackend) {
+          status = "old_backend";
+          error = "Plugin is connected to an outdated backend URL";
+        } else if (conn.outdated) {
+          status = "outdated";
+          error = "Roblox Studio plugin is outdated";
+        } else {
+          status = "mismatch";
+          error =
+            "Plugin connects to a different site ID than this browser";
+        }
+
         set({
-          status: "bridge_only",
+          status,
           lastCheck: now,
-          error: "Bridge server running but Roblox Studio not connected",
+          error,
+          consecutiveFailures: state.consecutiveFailures + 1,
+        });
+      } else {
+        // Bridge is up but no plugin is answering on THIS browser's siteId. Since
+        // the relay is reachable, this almost always means the installed plugin is
+        // baked for a different site than the browser currently has → report it as
+        // a mismatch so the user re-downloads, instead of a generic "disconnected".
+        set({
+          status: "mismatch",
+          lastCheck: now,
+          error: "No plugin connected to this site. The plugin may be configured for a different site ID — re-download it.",
           consecutiveFailures: state.consecutiveFailures + 1,
         });
       }

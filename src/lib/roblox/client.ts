@@ -318,6 +318,48 @@ export async function isRelaySiteActive(site: string): Promise<boolean> {
   }
 }
 
+/**
+ * Connection diagnostics — the server-side source of truth for whether Roblox
+ * Studio is ACTUALLY connected for this browser's siteId. Distinct from the
+ * relay/bridge being reachable. Web mode only; local mode uses the bridge.
+ */
+export interface ConnectionDiagnostics {
+  site: string;
+  connected: boolean;
+  exists: boolean;
+  timeoutMs: number;
+  serverVersion: string;
+  minPluginVersion: string;
+  outdated: boolean;
+  oldBackend: boolean;
+  serverBase: string;
+  session: {
+    pluginVersion: string;
+    baseUrl: string;
+    lastSeen: number;
+    ageMs: number;
+    registeredAt: number;
+    placeName: string | null;
+    placeId: string | null;
+  } | null;
+}
+
+export async function getConnectionDiagnostics(
+  site: string,
+): Promise<ConnectionDiagnostics | null> {
+  if (!isWebMode || !site) return null;
+  try {
+    const res = await fetch(
+      `${RELAY_BASE}/api/stud/conn?site=${encodeURIComponent(site)}`,
+      { method: "GET", headers: { "Cache-Control": "no-store" } },
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as ConnectionDiagnostics;
+  } catch {
+    return null;
+  }
+}
+
 const _cache = new Map<string, { data: unknown; expires: number }>();
 const SCRIPT_TTL = 30_000;
 const INSTANCE_TTL = 5_000;

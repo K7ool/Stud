@@ -199,7 +199,12 @@ function ConnectionScreen({ status }: { status: ConnectionStatus }) {
 
   const getStepStatus = (step: 1 | 2 | 3): "pending" | "active" | "complete" => {
     if (status === "connected") return "complete";
-    if (status === "bridge_only") {
+    if (
+      status === "bridge_only" ||
+      status === "mismatch" ||
+      status === "outdated" ||
+      status === "old_backend"
+    ) {
       if (step === 1) return "complete";
       if (step === 2) return "active";
       return "pending";
@@ -399,7 +404,19 @@ function StatusBadge({ status, gameInfo }: { status: ConnectionStatus; gameInfo?
     },
     bridge_only: {
       color: "bg-amber-500",
-      label: "Waiting",
+      label: "Waiting for Studio",
+    },
+    mismatch: {
+      color: "bg-amber-500",
+      label: "Site mismatch",
+    },
+    outdated: {
+      color: "bg-amber-500",
+      label: "Plugin outdated",
+    },
+    old_backend: {
+      color: "bg-amber-500",
+      label: "Old backend",
     },
     connected: {
       color: "bg-green-500",
@@ -409,9 +426,9 @@ function StatusBadge({ status, gameInfo }: { status: ConnectionStatus; gameInfo?
       color: "bg-amber-500 animate-pulse",
       label: "Reconnecting...",
     },
-  };
+  } as Record<ConnectionStatus, { color: string; label: string }>;
 
-  const { color, label } = config[status];
+  const { color, label } = config[status] ?? config.disconnected;
 
   return (
     <div className="flex items-center gap-2 text-sm text-muted-foreground">

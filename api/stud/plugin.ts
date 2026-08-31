@@ -26,6 +26,9 @@ local PLUGIN_NAME = "stud-bridge"
 local PLUGIN_DISPLAY_NAME = "Stud"
 local PLUGIN_URL_OVERRIDE = "{POLL_URL}"
 
+-- Bump in sync with api/stud/version.ts (PLUGIN_VERSION).
+local PLUGIN_VERSION = "2.0.0"
+
 local MAX_ACTIVITY_LOG = 10
 
 local HttpService = game:GetService("HttpService")
@@ -34,10 +37,29 @@ local ScriptEditorService = game:GetService("ScriptEditorService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local TweenService = game:GetService("TweenService")
 
--- Derive config from URL
+-- Derive config from URL. The canonical identity is PLUGIN_SITE_ID: the same
+-- 16-char siteId the browser stores in localStorage. The browser and this
+-- plugin are only paired when they use the exact same siteId.
 local POLL_URL = PLUGIN_URL_OVERRIDE
 local RESULT_URL = POLL_URL:gsub("/cmd%?site=", "/result?site=")
 local PLUGIN_SITE_ID = POLL_URL:match("site=([%w]+)") or ""
+local API_BASE = POLL_URL:match("(https?://[^/]+)") or ""
+local HANDSHAKE_URL = API_BASE .. "/api/stud/handshake?site=" .. PLUGIN_SITE_ID
+
+-- Explicit, validated configuration (see #12 plugin configuration).
+local CONFIG = {
+	SiteId = PLUGIN_SITE_ID,
+	Version = PLUGIN_VERSION,
+	PollUrl = POLL_URL,
+	ResultUrl = RESULT_URL,
+	HandshakeUrl = HANDSHAKE_URL,
+	ApiBase = API_BASE,
+}
+
+if PLUGIN_SITE_ID == "" or PLUGIN_SITE_ID == "nil" then
+	print("[stud-bridge] ERROR: No SiteId in config. Re-download the plugin "
+		.. "from the Stud web app so it embeds your site ID.")
+end
 
 -- State
 local isConnected = false
@@ -709,11 +731,49 @@ local function handleRequest(request)
 	return { status = 200, body = jsonEncode(result) }
 end
 
+-- Heartbeat poll URL: same command endpoint but carries the plugin's identity
+-- (version + backend base) so the server records/tracks the connection session.
+local POLL_HEARTBEAT_URL = POLL_URL
+	.. (POLL_URL:find("?") and "&" or "?")
+	.. "version=" .. HttpService:UrlEncode(PLUGIN_VERSION)
+	.. "&base=" .. HttpService:UrlEncode(API_BASE)
+
+-- Contact the backend handshake endpoint before polling so the server knows who
+-- we are (siteId + version + base) and can validate compatibility up front.
+-- Non-fatal: if it fails we still poll, but we log the error.
+local function doHandshake()
+	local ok, res = pcall(function()
+		return HttpService:RequestAsync({
+			Url = CONFIG.HandshakeUrl, Method = "POST",
+			Headers = { ["Content-Type"] = "application/json" },
+			Body = jsonEncode({
+				pluginVersion = PLUGIN_VERSION,
+				base = API_BASE,
+			}),
+		})
+	end)
+	if ok and res and res.Success then
+		print("[stud-bridge] Handshake OK")
+	else
+		print("[stud-bridge] Handshake failed: " .. tostring(res))
+	end
+end
+
 local function pollServer()
-	local failCount, maxFails = 0, 60
+	local failCount, maxFails = 60, 60
+	-- Throttle heartbeat writes so we don't hammer the backend (10x/sec polls).
+	local lastHeartbeatSent = 0
+	local HEARTBEAT_INTERVAL_MS = 2000
 	while pollingEnabled do
+		-- Heartbeat: piggyback identity on the command poll so cmd.ts can refresh
+		-- lastSeen, but only re-write every HEARTBEAT_INTERVAL to avoid spam.
+		local pollUrl = POLL_URL
+		if os.clock() * 1000 - lastHeartbeatSent >= HEARTBEAT_INTERVAL_MS then
+			pollUrl = POLL_HEARTBEAT_URL
+			lastHeartbeatSent = os.clock() * 1000
+		end
 		local ok, response = pcall(function()
-			return HttpService:RequestAsync({ Url = POLL_URL, Method = "GET" })
+			return HttpService:RequestAsync({ Url = pollUrl, Method = "GET" })
 		end)
 		if ok and response then
 			if response.Success and response.StatusCode == 200 and response.Body and response.Body ~= "" then
@@ -793,9 +853,10 @@ updateUI()
 toggleButton.Click:Connect(toggleConnection)
 toggleButton.Click:Connect(function() widget.Enabled = true end)
 
-if PLUGIN_SITE_ID ~= "" then
+if PLUGIN_SITE_ID ~= "" and PLUGIN_SITE_ID ~= "nil" then
 	task.spawn(function()
 		task.wait(1)
+		doHandshake()
 		pollingEnabled = true; isConnecting = true; updateUI()
 		task.spawn(pollServer)
 	end)
