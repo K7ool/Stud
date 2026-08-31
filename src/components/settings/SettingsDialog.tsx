@@ -193,6 +193,9 @@ function ChatGPTAuth() {
 
   const [copied, setCopied] = useState(false);
   const isAuthenticated = isOAuthAuthenticated();
+  // ChatGPT OAuth only works in the Tauri desktop app (OpenAI forces a
+  // localhost:1455 callback). On the web we surface a desktop-only notice.
+  const isWebMode = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
 
   // Poll for OAuth callback when logging in
   useEffect(() => {
@@ -337,6 +340,14 @@ function ChatGPTAuth() {
           <p className="text-xs text-muted-foreground text-center">
             Complete sign-in in your browser. This window will update automatically.
           </p>
+        </div>
+      ) : isWebMode ? (
+        <div className="rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground">
+          ChatGPT Plus/Pro sign-in is only available in the{" "}
+          <span className="font-medium text-foreground">Stud desktop app</span>.
+          On the web, use{" "}
+          <span className="font-medium text-foreground">OpenCode Zen</span> (free
+          models like Big Pickle) or an API key from the tabs above.
         </div>
       ) : (
         <Button 
